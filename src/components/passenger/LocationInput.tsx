@@ -20,13 +20,13 @@ const LocationInput: React.FC<LocationInputProps> = ({
   isActive = false,
 }) => {
   const isPickup = type === 'pickup';
-  
+
   return (
-    <div 
+    <div
       className={`
         flex items-center gap-3 p-4 rounded-2xl transition-all duration-200 cursor-pointer
-        ${isActive 
-          ? 'bg-primary-light ring-2 ring-primary' 
+        ${isActive
+          ? 'bg-primary-light ring-2 ring-primary'
           : 'bg-card hover:bg-accent'
         }
       `}
@@ -42,7 +42,7 @@ const LocationInput: React.FC<LocationInputProps> = ({
           <MapPin className="w-5 h-5" />
         )}
       </div>
-      
+
       <div className="flex-1 min-w-0">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           {isPickup ? 'Pickup' : 'Drop-off'}
@@ -51,7 +51,7 @@ const LocationInput: React.FC<LocationInputProps> = ({
           {value || placeholder}
         </p>
       </div>
-      
+
       {onVoiceClick && (
         <Button
           variant="icon"

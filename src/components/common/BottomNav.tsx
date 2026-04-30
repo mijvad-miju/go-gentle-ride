@@ -1,9 +1,10 @@
 import React from 'react';
-import { Home, Clock, User, Wallet } from 'lucide-react';
+import { Home, Clock, User, Wallet, Calendar } from 'lucide-react';
 
 interface NavItem {
   icon: React.ReactNode;
   label: string;
+  path?: string;
   isActive?: boolean;
   onClick?: () => void;
 }
@@ -12,31 +13,53 @@ interface BottomNavProps {
   items: NavItem[];
 }
 
+import { useNavigate, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+
 const BottomNav: React.FC<BottomNavProps> = ({ items }) => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { t } = useTranslation();
+
   return (
     <nav className="fixed bottom-0 left-0 right-0 bg-card border-t border-border pb-safe-bottom z-40">
       <div className="flex items-center justify-around h-16">
-        {items.map((item, index) => (
-          <button
-            key={index}
-            onClick={item.onClick}
-            className={`
-              flex flex-col items-center justify-center gap-1 px-4 py-2 min-w-[64px] transition-all duration-200
-              ${item.isActive 
-                ? 'text-primary' 
-                : 'text-muted-foreground hover:text-foreground'
-              }
-            `}
-          >
-            <div className={`
-              p-2 rounded-xl transition-all duration-200
-              ${item.isActive ? 'bg-primary/10' : ''}
-            `}>
-              {item.icon}
-            </div>
-            <span className="text-xs font-medium">{item.label}</span>
-          </button>
-        ))}
+        {items.map((item, index) => {
+          const isActive = item.isActive !== undefined
+            ? item.isActive
+            : (item.path ? location.pathname === item.path : false);
+
+          const translatedLabel = t(item.label.toLowerCase().replace(' ', '_'));
+
+          return (
+            <button
+              key={index}
+              onClick={() => {
+                if (item.path) {
+                  navigate(item.path);
+                }
+                if (item.onClick) {
+                  item.onClick();
+                }
+              }}
+              className={`
+                flex flex-col items-center justify-center gap-1 px-4 py-2 min-w-[64px] transition-all duration-200
+                ${isActive
+                  ? 'text-primary'
+                  : 'text-muted-foreground hover:text-foreground'
+                }
+              `}
+            >
+              <div className={`
+                p-2 rounded-xl transition-all duration-200
+                ${isActive ? 'bg-primary/10' : ''}
+              `}>
+                {isActive ? item.icon : item.icon}
+              </div>
+              <span className="text-xs font-medium">{translatedLabel || item.label}</span>
+            </button>
+          );
+        })}
       </div>
     </nav>
   );
@@ -44,16 +67,18 @@ const BottomNav: React.FC<BottomNavProps> = ({ items }) => {
 
 // Pre-built nav configs
 export const passengerNavItems: NavItem[] = [
-  { icon: <Home className="w-5 h-5" />, label: 'Home', isActive: true },
-  { icon: <Clock className="w-5 h-5" />, label: 'Trips' },
-  { icon: <User className="w-5 h-5" />, label: 'Profile' },
+  { icon: <Home className="w-5 h-5" />, label: 'Home', path: '/passenger' },
+  { icon: <Calendar className="w-5 h-5" />, label: 'Prebookings', path: '/passenger/prebookings' },
+  { icon: <Clock className="w-5 h-5" />, label: 'Trips', path: '/passenger/trips' },
+  { icon: <User className="w-5 h-5" />, label: 'Profile', path: '/passenger/profile' },
 ];
 
 export const driverNavItems: NavItem[] = [
-  { icon: <Home className="w-5 h-5" />, label: 'Home', isActive: true },
-  { icon: <Wallet className="w-5 h-5" />, label: 'Earnings' },
-  { icon: <Clock className="w-5 h-5" />, label: 'Trips' },
-  { icon: <User className="w-5 h-5" />, label: 'Profile' },
+  { icon: <Home className="w-5 h-5" />, label: 'Home', path: '/driver' },
+  { icon: <Wallet className="w-5 h-5" />, label: 'Earnings', path: '/driver/earnings' },
+  { icon: <Calendar className="w-5 h-5" />, label: 'Prebookings', path: '/driver/prebookings' },
+  { icon: <Clock className="w-5 h-5" />, label: 'Trips', path: '/driver/trips' },
+  { icon: <User className="w-5 h-5" />, label: 'Profile', path: '/driver/profile' },
 ];
 
 export default BottomNav;

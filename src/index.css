@@ -1,40 +1,40 @@
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&display=swap');
-
 @layer base {
   :root {
-    /* Warm, trustworthy palette for auto-taxi app */
-    --background: 40 30% 97%;
-    --foreground: 220 20% 15%;
+    /* Auto Rickshaw Palette - Solid Black and Yellow Theme */
+    --background: 0 0% 0%;
+    --foreground: 45 30% 95%;
 
-    --card: 0 0% 100%;
-    --card-foreground: 220 20% 15%;
+    --card: 0 0% 5%;
+    --card-foreground: 45 30% 95%;
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 220 20% 15%;
+    --popover: 0 0% 5%;
+    --popover-foreground: 45 30% 95%;
 
-    /* Teal - Trust, safety, calm */
-    --primary: 168 55% 38%;
-    --primary-foreground: 0 0% 100%;
-    --primary-light: 168 45% 92%;
+    /* Auto Rickshaw Yellow - The iconic main color */
+    --primary: 45 93% 47%;
+    --primary-foreground: 0 0% 0%;
+    --primary-light: 45 50% 20%;
 
-    /* Warm amber - Friendly, approachable */
-    --secondary: 35 85% 55%;
-    --secondary-foreground: 35 90% 15%;
+    /* Dark trim */
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 45 90% 50%;
 
-    /* Soft sage for muted elements */
-    --muted: 160 15% 92%;
-    --muted-foreground: 200 10% 45%;
+    /* Muted elements */
+    --muted: 0 0% 15%;
+    --muted-foreground: 220 10% 60%;
 
-    /* Light teal accent */
-    --accent: 168 40% 94%;
-    --accent-foreground: 168 55% 30%;
+    /* Yellow accent */
+    --accent: 45 20% 20%;
+    --accent-foreground: 45 90% 70%;
 
-    /* Safety red - visible but not alarming */
-    --destructive: 0 65% 55%;
+    /* Safety red */
+    --destructive: 0 70% 50%;
     --destructive-foreground: 0 0% 100%;
 
     /* Success green */
@@ -42,57 +42,58 @@
     --success-foreground: 0 0% 100%;
 
     /* Warning amber */
-    --warning: 40 90% 50%;
-    --warning-foreground: 40 90% 15%;
+    --warning: 35 90% 50%;
+    --warning-foreground: 0 0% 100%;
 
-    --border: 200 15% 88%;
-    --input: 200 15% 88%;
-    --ring: 168 55% 38%;
+    --border: 220 15% 22%;
+    --input: 220 15% 22%;
+    --ring: 45 93% 47%; /* Focus ring matches primary */
 
     --radius: 1rem;
 
     /* Custom shadows for depth */
-    --shadow-soft: 0 2px 8px -2px hsl(220 20% 15% / 0.08);
-    --shadow-card: 0 4px 16px -4px hsl(220 20% 15% / 0.1);
-    --shadow-elevated: 0 8px 24px -8px hsl(220 20% 15% / 0.15);
+    --shadow-soft: 0 2px 8px -2px hsl(0 0% 0% / 0.5);
+    --shadow-card: 0 4px 16px -4px hsl(0 0% 0% / 0.6);
+    --shadow-elevated: 0 8px 24px -8px hsl(0 0% 0% / 0.7);
 
     /* Animation timing */
     --transition-fast: 150ms;
     --transition-normal: 200ms;
     --transition-slow: 300ms;
 
-    --sidebar-background: 0 0% 98%;
-    --sidebar-foreground: 240 5.3% 26.1%;
-    --sidebar-primary: 240 5.9% 10%;
-    --sidebar-primary-foreground: 0 0% 98%;
-    --sidebar-accent: 240 4.8% 95.9%;
-    --sidebar-accent-foreground: 240 5.9% 10%;
-    --sidebar-border: 220 13% 91%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 45 93% 47%;
+    --sidebar-primary-foreground: 0 0% 10%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 45 93% 47%;
   }
 
   .dark {
-    --background: 220 20% 10%;
-    --foreground: 40 20% 95%;
+    /* Dark mode is the same as light mode now */
+    --background: 0 0% 0%;
+    --foreground: 45 30% 95%;
 
-    --card: 220 18% 14%;
-    --card-foreground: 40 20% 95%;
+    --card: 0 0% 5%;
+    --card-foreground: 45 30% 95%;
 
-    --popover: 220 18% 14%;
-    --popover-foreground: 40 20% 95%;
+    --popover: 0 0% 5%;
+    --popover-foreground: 45 30% 95%;
 
-    --primary: 168 50% 45%;
-    --primary-foreground: 0 0% 100%;
-    --primary-light: 168 30% 20%;
+    --primary: 45 93% 47%;
+    --primary-foreground: 0 0% 0%;
+    --primary-light: 45 50% 20%;
 
-    --secondary: 35 75% 50%;
-    --secondary-foreground: 35 90% 95%;
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 45 90% 50%;
 
-    --muted: 220 15% 20%;
-    --muted-foreground: 200 10% 60%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 220 10% 60%;
 
-    --accent: 168 30% 20%;
-    --accent-foreground: 168 45% 70%;
+    --accent: 45 20% 20%;
+    --accent-foreground: 45 90% 70%;
 
     --destructive: 0 60% 50%;
     --destructive-foreground: 0 0% 100%;
@@ -100,21 +101,21 @@
     --success: 145 55% 45%;
     --success-foreground: 0 0% 100%;
 
-    --warning: 40 85% 55%;
+    --warning: 35 85% 55%;
     --warning-foreground: 40 90% 10%;
 
     --border: 220 15% 22%;
     --input: 220 15% 22%;
-    --ring: 168 50% 45%;
+    --ring: 45 93% 47%;
 
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 224.3 76.3% 48%;
-    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-primary: 45 93% 47%;
+    --sidebar-primary-foreground: 0 0% 10%;
     --sidebar-accent: 240 3.7% 15.9%;
     --sidebar-accent-foreground: 240 4.8% 95.9%;
     --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --sidebar-ring: 45 93% 47%;
   }
 }
 
@@ -130,6 +131,7 @@
 }
 
 @layer components {
+
   /* Large touch targets for accessibility */
   .touch-target {
     @apply min-h-[56px] min-w-[56px] flex items-center justify-center;
@@ -153,8 +155,17 @@
   }
 
   @keyframes gentle-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.8; transform: scale(1.02); }
+
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    50% {
+      opacity: 0.8;
+      transform: scale(1.02);
+    }
   }
 
   /* Map overlay gradient */
@@ -168,6 +179,7 @@
 }
 
 @layer utilities {
+
   /* Smooth transitions */
   .transition-gentle {
     transition: all var(--transition-normal) cubic-bezier(0.4, 0, 0.2, 1);
