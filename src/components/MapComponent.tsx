@@ -28,15 +28,6 @@ const dropoffIcon = L.icon({
     shadowSize: [41, 41]
 });
 
-const driverIcon = L.icon({
-    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-yellow.png',
-    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-    iconSize: [25, 41],
-    iconAnchor: [12, 41],
-    popupAnchor: [1, -34],
-    shadowSize: [41, 41]
-});
-
 const defaultIcon = L.icon({
     iconUrl: icon,
     shadowUrl: iconShadow,
@@ -47,6 +38,14 @@ const defaultIcon = L.icon({
 const userLocationIcon = new L.DivIcon({
     className: 'user-location-marker',
     html: `<div style="background-color: #3b82f6; width: 16px; height: 16px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);"></div>`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11]
+});
+
+/** Same dot shape as passenger (blue); brand primary yellow for driver. */
+const driverLocationIcon = new L.DivIcon({
+    className: 'driver-location-marker',
+    html: `<div style="background-color: hsl(45, 93%, 47%); width: 16px; height: 16px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 10px hsl(45 93% 47% / 0.55);"></div>`,
     iconSize: [22, 22],
     iconAnchor: [11, 11]
 });
@@ -236,8 +235,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
                 )}
 
                 {driverPosition && driverPosition[0] !== undefined && (
-                    <Marker position={driverPosition} icon={driverIcon}>
-                        <Popup>Driver Location</Popup>
+                    <Marker position={driverPosition} icon={driverLocationIcon}>
+                        <Popup>Driver location</Popup>
                     </Marker>
                 )}
 

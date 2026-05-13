@@ -3,7 +3,8 @@ import Header from '@/components/common/Header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { IndianRupee, TrendingUp, Calendar, Clock, ChevronRight } from 'lucide-react';
-import { getUser } from '@/lib/auth';
+import { getAuthToken, getUser } from '@/lib/auth';
+import { getApiOrigin } from '@/lib/apiOrigin';
 
 interface EarningItem {
     _id: string;
@@ -25,15 +26,15 @@ const DriverEarnings: React.FC = () => {
     const [weeklyStats, setWeeklyStats] = useState<EarningsSummary>({ totalEarnings: 0, totalTrips: 0 });
     const [recentEarnings, setRecentEarnings] = useState<EarningItem[]>([]);
     const [loading, setLoading] = useState(true);
-    const user = getUser();
+    const user = getUser('driver');
 
     useEffect(() => {
         const fetchEarnings = async () => {
             if (!user || user.role !== 'driver') return;
 
             try {
-                const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-                const headers = { 'Authorization': `Bearer ${localStorage.getItem('authToken')}` };
+                const API_URL = getApiOrigin();
+                const headers = { 'Authorization': `Bearer ${getAuthToken('driver')}` };
 
                 // Fetch today's earnings
                 const todayRes = await fetch(`${API_URL}/api/earnings/driver/${user._id}/today`, { headers });

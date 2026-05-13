@@ -59,16 +59,27 @@ const Settings = () => {
   const { t, i18n } = useTranslation();
 
   // Settings State
-  const [language, setLanguageState] = useState(i18n.language || 'en');
+  const baseLang = (code: string) => (code || 'en').split('-')[0].toLowerCase();
+
+  const [language, setLanguageState] = useState(() => baseLang(localStorage.getItem('appLanguage') || i18n.language || 'en'));
   const [theme, setTheme] = useState(localStorage.getItem('appTheme') || 'light');
   const [accentColor, setAccentColor] = useState(localStorage.getItem('appAccentColor') || 'yellow');
 
   // Handle language change
   const handleLanguageChange = (newLang: string) => {
-    setLanguageState(newLang);
-    i18n.changeLanguage(newLang);
-    localStorage.setItem('appLanguage', newLang);
+    const code = baseLang(newLang);
+    setLanguageState(code);
+    void i18n.changeLanguage(code);
+    localStorage.setItem('appLanguage', code);
   };
+
+  useEffect(() => {
+    const sync = () => setLanguageState(baseLang(i18n.language));
+    i18n.on('languageChanged', sync);
+    return () => {
+      i18n.off('languageChanged', sync);
+    };
+  }, [i18n]);
 
   // Persist other changes
   useEffect(() => {
@@ -90,8 +101,8 @@ const Settings = () => {
     }
   }, [theme, accentColor]);
 
-  const currentLangName = languages.find(l => l.id === language)?.name || 'English';
-  const currentThemeName = themes.find(t => t.id === theme)?.name || 'Light Mode';
+  const currentLangName = languages.find((l) => l.id === language)?.name || 'English';
+  const currentThemeName = t(theme === 'system' ? 'system_default' : `${theme}_mode`);
 
   return (
     <div className="flex flex-col min-h-screen bg-background text-foreground transition-colors duration-300">
@@ -130,7 +141,9 @@ const Settings = () => {
                       </div>
                       <div className="flex flex-col items-start">
                         <span className="text-sm font-semibold">{t('display_theme')}</span>
-                        <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t(theme + '_mode')}</span>
+                        <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">
+                          {t(theme === 'system' ? 'system_default' : `${theme}_mode`)}
+                        </span>
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-muted-foreground/30" />
@@ -150,7 +163,9 @@ const Settings = () => {
                         >
                           <div className="flex items-center gap-3">
                             <t_item.icon className="w-5 h-5" />
-                            <span className="font-bold">{t(t_item.id + '_mode')}</span>
+                            <span className="font-bold">
+                              {t(t_item.id === 'system' ? 'system_default' : `${t_item.id}_mode`)}
+                            </span>
                           </div>
                           {theme === t_item.id && <Check className="w-5 h-5" />}
                         </Button>
@@ -214,7 +229,7 @@ const Settings = () => {
               {t('sign_out')}
             </Button>
             <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-[0.3em]">
-              Handcrafted in India 🇮🇳
+              {t('handcrafted_india')} 🇮🇳
             </p>
           </div>
 

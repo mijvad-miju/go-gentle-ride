@@ -1,6 +1,6 @@
 import express from 'express';
 import Ride from '../models/Ride.js';
-import User from '../models/User.js';
+import Driver from '../models/Driver.js';
 import Earning from '../models/Earning.js';
 
 const router = express.Router();
@@ -38,12 +38,27 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { isScheduled, scheduledFor, ...rest } = req.body;
-    
+
+    const scheduledFlag = Boolean(isScheduled);
+    const scheduledDate = scheduledFor ? new Date(scheduledFor) : null;
+
+    if (scheduledFlag) {
+      if (!scheduledDate || Number.isNaN(scheduledDate.getTime())) {
+        return res.status(400).json({ message: 'Valid scheduledFor is required for a scheduled ride' });
+      }
+      const minLeadMs = 5 * 60 * 1000;
+      if (scheduledDate.getTime() < Date.now() + minLeadMs) {
+        return res.status(400).json({
+          message: 'Scheduled pickup must be at least 5 minutes from now'
+        });
+      }
+    }
+
     const rideData = {
       ...rest,
-      isScheduled: isScheduled || false,
-      scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
-      status: isScheduled ? 'scheduled' : 'pending' // Set status based on booking type
+      isScheduled: scheduledFlag,
+      scheduledFor: scheduledDate,
+      status: scheduledFlag ? 'scheduled' : 'pending'
     };
 
     const ride = new Ride(rideData);
@@ -52,12 +67,14 @@ router.post('/', async (req, res) => {
     // Populate the saved ride
     await savedRide.populate('passengerId', 'name phone profilePhoto');
 
-    // Broadcast to drivers only if it's an immediate ride
-    if (!rideData.isScheduled) {
-      const io = req.app.get('io');
-      if (io) {
+    const io = req.app.get('io');
+    if (io) {
+      if (!rideData.isScheduled) {
         io.to('drivers').emit('new_ride', savedRide);
         console.log('Broadcasted new_ride event to drivers');
+      } else {
+        io.to('drivers').emit('new_scheduled_ride', savedRide.toObject());
+        console.log('Broadcasted new_scheduled_ride event to drivers');
       }
     }
 
@@ -122,13 +139,15 @@ router.patch('/:id/accept', async (req, res) => {
     }
 
     ride.driverId = driverId;
-    ride.status = 'accepted';
+    // For scheduled rides, keep status as "scheduled" until pickup time.
+    // This prevents passenger/driver apps from showing "arriving" too early.
+    ride.status = ride.isScheduled ? 'scheduled' : 'accepted';
     ride.acceptedAt = new Date();
 
     // Update driver's online status (only if it's an immediate ride)
     // For scheduled rides, driver remains free until the scheduled time
     if (!ride.isScheduled) {
-      await User.findByIdAndUpdate(driverId, {
+      await Driver.findByIdAndUpdate(driverId, {
         'driverInfo.isOnline': false // Driver is now on a ride
       });
     }
@@ -140,10 +159,37 @@ router.patch('/:id/accept', async (req, res) => {
     const io = req.app.get('io');
     if (io) {
       io.to(`ride_${req.params.id}`).emit('ride_updated', updatedRide);
-      
+
+      const driverOid =
+        updatedRide.driverId?._id != null ? String(updatedRide.driverId._id) : String(driverId);
+      const loc = updatedRide.driverId?.driverInfo?.currentLocation;
+      if (
+        driverOid &&
+        loc &&
+        typeof loc.lat === 'number' &&
+        typeof loc.lng === 'number' &&
+        Number.isFinite(loc.lat) &&
+        Number.isFinite(loc.lng)
+      ) {
+        io.to(`tracking_${driverOid}`).emit('driver_location_update', {
+          driverId: driverOid,
+          location: { lat: loc.lat, lng: loc.lng }
+        });
+      }
+
       // If it's a scheduled ride, emit a specific event so other drivers remove it from their lists
       if (ride.isScheduled) {
         io.to('drivers').emit('scheduled_ride_accepted', { rideId: updatedRide._id });
+        const passengerRef = updatedRide.passengerId;
+        const passengerId =
+          passengerRef && typeof passengerRef === 'object' && passengerRef._id
+            ? passengerRef._id.toString()
+            : passengerRef?.toString?.();
+        if (passengerId) {
+          io.to(`passenger_${passengerId}`).emit('prebook_driver_assigned', {
+            rideId: updatedRide._id.toString()
+          });
+        }
       }
     }
 
@@ -237,7 +283,7 @@ router.patch('/:id/complete', async (req, res) => {
       await earning.save();
 
       // Update driver stats
-      await User.findByIdAndUpdate(ride.driverId, {
+      await Driver.findByIdAndUpdate(ride.driverId, {
         $inc: { 'driverInfo.totalRides': 1 },
         'driverInfo.isOnline': true // Driver is available again
       });
@@ -275,7 +321,7 @@ router.patch('/:id/cancel', async (req, res) => {
 
     // If driver was assigned, make them available again
     if (ride.driverId && ride.status !== 'completed') {
-      await User.findByIdAndUpdate(ride.driverId, {
+      await Driver.findByIdAndUpdate(ride.driverId, {
         'driverInfo.isOnline': true
       });
     }
@@ -337,14 +383,14 @@ router.patch('/:id/rate', async (req, res) => {
 
     // Update driver's average rating if passenger rated
     if (passengerRating && ride.driverId) {
-      const driver = await User.findById(ride.driverId);
+      const driver = await Driver.findById(ride.driverId);
       if (driver) {
         // Calculate new average rating
         const totalRides = driver.driverInfo.totalRides || 1;
         const currentRating = driver.driverInfo.rating || 0;
         const newRating = ((currentRating * (totalRides - 1)) + passengerRating) / totalRides;
 
-        await User.findByIdAndUpdate(ride.driverId, {
+        await Driver.findByIdAndUpdate(ride.driverId, {
           'driverInfo.rating': newRating
         });
       }

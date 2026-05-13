@@ -1,20 +1,23 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Globe, User, Car, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { getUser, isAuthenticated } from '@/lib/auth';
 
 const Index: React.FC = () => {
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   React.useEffect(() => {
-    if (isAuthenticated()) {
-      const user = getUser();
-      if (user?.role === 'passenger') {
-        navigate('/passenger', { replace: true });
-      } else if (user?.role === 'driver') {
-        navigate('/driver', { replace: true });
-      }
+    const hasPassenger = isAuthenticated('passenger') && !!getUser('passenger');
+    const hasDriver = isAuthenticated('driver') && !!getUser('driver');
+
+    // If both roles are signed in on this browser, stay on role picker.
+    if (hasPassenger && !hasDriver) {
+      navigate('/passenger', { replace: true });
+    } else if (hasDriver && !hasPassenger) {
+      navigate('/driver', { replace: true });
     }
   }, [navigate]);
 
@@ -36,25 +39,25 @@ const Index: React.FC = () => {
           Auto<span className="text-primary">Ride</span>
         </h1>
         <p className="text-lg text-muted-foreground text-center max-w-xs animate-fade-in" style={{ animationDelay: '100ms' }}>
-          Your trusted auto-rickshaw companion
+          {t('index_tagline')}
         </p>
 
         {/* Features */}
         <div className="flex gap-4 mt-8 mb-12">
           {[
-            { icon: Shield, label: 'Safe' },
-            { icon: Globe, label: 'Local' },
-            { icon: Car, label: 'Fast' },
+            { icon: Shield, labelKey: 'index_feature_safe' },
+            { icon: Globe, labelKey: 'index_feature_local' },
+            { icon: Car, labelKey: 'index_feature_fast' },
           ].map((feature, index) => (
             <div
-              key={feature.label}
+              key={feature.labelKey}
               className="flex flex-col items-center gap-2 animate-fade-in"
               style={{ animationDelay: `${200 + index * 100}ms` }}
             >
               <div className="w-12 h-12 bg-accent rounded-xl flex items-center justify-center">
                 <feature.icon className="w-5 h-5 text-primary" />
               </div>
-              <span className="text-xs font-medium text-muted-foreground">{feature.label}</span>
+              <span className="text-xs font-medium text-muted-foreground">{t(feature.labelKey)}</span>
             </div>
           ))}
         </div>
@@ -63,7 +66,7 @@ const Index: React.FC = () => {
       {/* Role selection */}
       <div className="px-6 pb-12 space-y-4">
         <p className="text-center text-sm font-medium text-muted-foreground mb-6">
-          Sign in to continue as
+          {t('index_sign_in_prompt')}
         </p>
 
         <Button
@@ -72,7 +75,7 @@ const Index: React.FC = () => {
           onClick={() => navigate('/passenger/login')}
         >
           <User className="w-5 h-5" />
-          <span>Passenger Login</span>
+          <span>{t('passenger_login')}</span>
         </Button>
 
         <Button
@@ -81,7 +84,7 @@ const Index: React.FC = () => {
           onClick={() => navigate('/driver/login')}
         >
           <Car className="w-5 h-5" />
-          <span>Driver Partner Login</span>
+          <span>{t('driver_partner_login')}</span>
         </Button>
 
         {/* Language selector hint */}
@@ -90,7 +93,7 @@ const Index: React.FC = () => {
           onClick={() => { }}
         >
           <Globe className="w-4 h-4" />
-          <span>हिंदी / മലയാളം / English</span>
+          <span>{t('index_languages_hint')}</span>
         </button>
       </div>
     </div>

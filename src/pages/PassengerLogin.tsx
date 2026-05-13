@@ -1,28 +1,29 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { User, Phone, Lock, Mail, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from '@/hooks/use-toast';
 
-import { getUser, isAuthenticated } from '@/lib/auth';
+import { getUser, isAuthenticated, setAuth } from '@/lib/auth';
+import { getApiOrigin } from '@/lib/apiOrigin';
 
 type AuthMode = 'login' | 'register';
 
 const PassengerLogin: React.FC = () => {
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const [mode, setMode] = useState<AuthMode>('login');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
   React.useEffect(() => {
-    if (isAuthenticated()) {
-      const user = getUser();
+    if (isAuthenticated('passenger')) {
+      const user = getUser('passenger');
       if (user?.role === 'passenger') {
         navigate('/passenger', { replace: true });
-      } else if (user?.role === 'driver') {
-        navigate('/driver', { replace: true });
       }
     }
   }, [navigate]);
@@ -47,7 +48,7 @@ const PassengerLogin: React.FC = () => {
     setLoading(true);
 
     try {
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const API_URL = getApiOrigin();
 
       if (mode === 'register') {
         // Register
@@ -80,9 +81,7 @@ const PassengerLogin: React.FC = () => {
           throw new Error(data.message || 'Registration failed');
         }
 
-        // Store token and user data
-        localStorage.setItem('authToken', data.token);
-        localStorage.setItem('user', JSON.stringify(data.user));
+        setAuth(data.token, data.user);
 
         toast({
           title: 'Success!',
@@ -121,9 +120,7 @@ const PassengerLogin: React.FC = () => {
           throw new Error(data.message || 'Login failed');
         }
 
-        // Store token and user data
-        localStorage.setItem('authToken', data.token);
-        localStorage.setItem('user', JSON.stringify(data.user));
+        setAuth(data.token, data.user);
 
         toast({
           title: 'Welcome back!',
@@ -172,26 +169,24 @@ const PassengerLogin: React.FC = () => {
 
         {/* Title */}
         <h1 className="text-3xl font-bold text-foreground mb-2">
-          {mode === 'login' ? 'Welcome Back' : 'Create Account'}
+          {mode === 'login' ? t('auth_welcome_back') : t('auth_create_account')}
         </h1>
         <p className="text-muted-foreground text-center mb-8">
-          {mode === 'login'
-            ? 'Sign in to continue as passenger'
-            : 'Sign up to start booking rides'}
+          {mode === 'login' ? t('auth_signin_passenger') : t('auth_register_passenger')}
         </p>
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-4">
           {mode === 'register' && (
             <div className="space-y-2">
-              <Label htmlFor="name">Full Name</Label>
+              <Label htmlFor="name">{t('full_name')}</Label>
               <div className="relative">
                 <User className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-muted-foreground" />
                 <Input
                   id="name"
                   name="name"
                   type="text"
-                  placeholder="Enter your name"
+                  placeholder={t('placeholder_name')}
                   value={formData.name}
                   onChange={handleInputChange}
                   className="pl-10"
@@ -202,14 +197,14 @@ const PassengerLogin: React.FC = () => {
           )}
 
           <div className="space-y-2">
-            <Label htmlFor="phone">Phone Number</Label>
+            <Label htmlFor="phone">{t('phone_number')}</Label>
             <div className="relative">
               <Phone className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-muted-foreground" />
               <Input
                 id="phone"
                 name="phone"
                 type="tel"
-                placeholder="Enter phone number"
+                placeholder={t('placeholder_phone')}
                 value={formData.phone}
                 onChange={handleInputChange}
                 className="pl-10"
@@ -220,14 +215,14 @@ const PassengerLogin: React.FC = () => {
 
           {mode === 'register' && (
             <div className="space-y-2">
-              <Label htmlFor="email">Email (Optional)</Label>
+              <Label htmlFor="email">{t('email_optional')}</Label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-muted-foreground" />
                 <Input
                   id="email"
                   name="email"
                   type="email"
-                  placeholder="Enter email (optional)"
+                  placeholder={t('placeholder_email_optional')}
                   value={formData.email}
                   onChange={handleInputChange}
                   className="pl-10"
@@ -237,14 +232,14 @@ const PassengerLogin: React.FC = () => {
           )}
 
           <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
+            <Label htmlFor="password">{t('password')}</Label>
             <div className="relative">
               <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-muted-foreground" />
               <Input
                 id="password"
                 name="password"
                 type={showPassword ? 'text' : 'password'}
-                placeholder="Enter password"
+                placeholder={t('placeholder_password')}
                 value={formData.password}
                 onChange={handleInputChange}
                 className="pl-10 pr-10"
@@ -264,9 +259,7 @@ const PassengerLogin: React.FC = () => {
               </button>
             </div>
             {mode === 'register' && (
-              <p className="text-xs text-muted-foreground">
-                Password must be at least 6 characters
-              </p>
+              <p className="text-xs text-muted-foreground">{t('password_rule_min6')}</p>
             )}
           </div>
 
@@ -276,14 +269,14 @@ const PassengerLogin: React.FC = () => {
             className="w-full"
             disabled={loading}
           >
-            {loading ? 'Please wait...' : mode === 'login' ? 'Sign In' : 'Create Account'}
+            {loading ? t('please_wait') : mode === 'login' ? t('sign_in') : t('sign_up')}
           </Button>
         </form>
 
         {/* Toggle mode */}
         <div className="mt-6 text-center">
           <p className="text-sm text-muted-foreground">
-            {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
+            {mode === 'login' ? t('toggle_signup_prompt') : t('toggle_login_prompt')}{' '}
             <button
               onClick={() => {
                 setMode(mode === 'login' ? 'register' : 'login');
@@ -291,7 +284,7 @@ const PassengerLogin: React.FC = () => {
               }}
               className="text-primary font-semibold hover:underline"
             >
-              {mode === 'login' ? 'Sign Up' : 'Sign In'}
+              {mode === 'login' ? t('sign_up') : t('sign_in')}
             </button>
           </p>
         </div>

@@ -27,7 +27,8 @@ import { toast } from '@/hooks/use-toast';
 
 type AuthMode = 'login' | 'register';
 
-import { getUser, isAuthenticated } from '@/lib/auth';
+import { getUser, isAuthenticated, setAuth } from '@/lib/auth';
+import { getApiOrigin } from '@/lib/apiOrigin';
 
 // Indian vehicle number plate validation
 const validateVehicleNumber = (vehicleNumber: string): boolean => {
@@ -44,12 +45,10 @@ const DriverLogin: React.FC = () => {
   const [loading, setLoading] = useState(false);
 
   React.useEffect(() => {
-    if (isAuthenticated()) {
-      const user = getUser();
+    if (isAuthenticated('driver')) {
+      const user = getUser('driver');
       if (user?.role === 'driver') {
         navigate('/driver', { replace: true });
-      } else if (user?.role === 'passenger') {
-        navigate('/passenger', { replace: true });
       }
     }
   }, [navigate]);
@@ -146,7 +145,7 @@ const DriverLogin: React.FC = () => {
     setLoading(true);
 
     try {
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const API_URL = getApiOrigin();
 
       if (mode === 'register') {
         // Validate required fields
@@ -233,9 +232,7 @@ const DriverLogin: React.FC = () => {
           throw new Error(data.message || 'Registration failed');
         }
 
-        // Store token and user data
-        localStorage.setItem('authToken', data.token);
-        localStorage.setItem('user', JSON.stringify(data.user));
+        setAuth(data.token, data.user);
 
         toast({
           title: 'Success!',
@@ -274,9 +271,7 @@ const DriverLogin: React.FC = () => {
           throw new Error(data.message || 'Login failed');
         }
 
-        // Store token and user data
-        localStorage.setItem('authToken', data.token);
-        localStorage.setItem('user', JSON.stringify(data.user));
+        setAuth(data.token, data.user);
 
         toast({
           title: 'Welcome back!',

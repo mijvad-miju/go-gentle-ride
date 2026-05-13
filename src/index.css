@@ -176,6 +176,13 @@
   .map-overlay-top {
     background: linear-gradient(to bottom, hsl(var(--background)) 0%, transparent 100%);
   }
+
+  /* Leaflet DivIcon: circular passenger (blue) / driver (primary yellow) dots */
+  .leaflet-container .user-location-marker.leaflet-div-icon,
+  .leaflet-container .driver-location-marker.leaflet-div-icon {
+    background: transparent;
+    border: none;
+  }
 }
 
 @layer utilities {

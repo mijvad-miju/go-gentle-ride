@@ -1,6 +1,6 @@
 import React from 'react';
 import { Menu, Bell, User, Settings, Clock, CreditCard, LogOut, ChevronRight, Shield, HelpCircle } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import {
@@ -28,23 +28,31 @@ const Header: React.FC<HeaderProps> = ({
   rightContent,
 }) => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { t } = useTranslation();
-  const user = getUser();
+  const inferredRole = location.pathname.startsWith('/driver') ? 'driver' : 'passenger';
+  const user = getUser(inferredRole);
 
   const handleLogout = () => {
-    clearAuth();
+    clearAuth(inferredRole);
     toast({
       title: t('sign_out'),
       description: t('sign_out')
     });
-    navigate('/');
+    navigate(inferredRole === 'driver' ? '/driver/login' : '/passenger/login');
   };
 
-  const menuItems = [
-    { icon: User, label: t('profile'), path: '/passenger/profile' },
-    { icon: Clock, label: t('my_rides'), path: '/passenger/trips' },
-    { icon: Settings, label: t('settings'), path: '/passenger/settings' },
-  ];
+  const menuItems = inferredRole === 'driver'
+    ? [
+      { icon: User, label: t('profile'), path: '/driver/profile' },
+      { icon: Clock, label: t('my_rides'), path: '/driver/trips' },
+      { icon: CreditCard, label: t('earnings'), path: '/driver/earnings' },
+    ]
+    : [
+      { icon: User, label: t('profile'), path: '/passenger/profile' },
+      { icon: Clock, label: t('my_rides'), path: '/passenger/trips' },
+      { icon: Settings, label: t('settings'), path: '/passenger/settings' },
+    ];
 
   return (
     <header className="sticky top-0 z-40 bg-background/80 backdrop-blur-lg border-b border-border/50 pt-safe-top">

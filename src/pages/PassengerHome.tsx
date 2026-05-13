@@ -20,12 +20,39 @@ import MapView from '@/components/passenger/MapView';
 import MapComponent from '@/components/MapComponent';
 import AutoRickshaw from '@/components/icons/AutoRickshaw';
 import { toast } from '@/hooks/use-toast';
+import { getAuthToken, getUser } from '@/lib/auth';
+import { getApiOrigin } from '@/lib/apiOrigin';
 
-type BookingStep = 'location' | 'confirm' | 'searching' | 'found';
+const API_ORIGIN = getApiOrigin();
+
+const INDIA_BOUNDS = { minLat: 6.746, maxLat: 37.09, minLng: 68.162, maxLng: 97.395 };
+
+function isCoordInIndia(lat: number, lng: number): boolean {
+  return (
+    lat >= INDIA_BOUNDS.minLat &&
+    lat <= INDIA_BOUNDS.maxLat &&
+    lng >= INDIA_BOUNDS.minLng &&
+    lng <= INDIA_BOUNDS.maxLng
+  );
+}
+
+function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6371;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const x =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(Math.max(0, 1 - x)));
+}
+
+type BookingStep = 'location' | 'confirm' | 'searching';
 
 const PassengerHome = () => {
   const navigate = useNavigate();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [step, setStep] = useState<BookingStep>('location');
   type LocationData = { name: string; lat: number; lng: number } | null;
   const [source, setSource] = useState<LocationData>(null);
@@ -59,11 +86,81 @@ const PassengerHome = () => {
   const [sttTranscriptDisplay, setSttTranscriptDisplay] = useState('');
   const [showVoiceOverlay, setShowVoiceOverlay] = useState(false);
 
+  const waitingFareMeta = React.useMemo(() => {
+    if (step !== 'searching' || !source || !destination) return null;
+    const approxKm =
+      routeStats?.distanceKm ?? haversineKm(source, destination) * 1.28;
+    return {
+      fare: Math.round(approxKm * 15 + 20),
+      distanceStr: routeStats?.distanceStr ?? `${approxKm.toFixed(1)} km`,
+      durationStr: routeStats?.durationStr ?? `${Math.round(approxKm * 3 + 2)} min`,
+    };
+  }, [step, source, destination, routeStats]);
+
+  const getDefaultScheduleTime = () => new Date(Date.now() + 30 * 60000);
+  const toDatetimeLocalValue = (date: Date) => {
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
+  };
+
   const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
   const mediaStreamRef = React.useRef<MediaStream | null>(null);
   const recordedChunksRef = React.useRef<BlobPart[]>([]);
   const stopHandledRef = React.useRef(false);
   const recordingStartedAtRef = React.useRef<number>(0);
+
+  /** While waiting for a driver: HTTP poll + socket `ride_updated` */
+  const pollingIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const waitingSocketRef = React.useRef<{ disconnect: () => void } | null>(null);
+  const acceptNavigatedRef = React.useRef(false);
+
+  const clearRideWaitingPoll = React.useCallback(() => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+  }, []);
+
+  const disconnectRideWaitingSocket = React.useCallback(() => {
+    if (waitingSocketRef.current) {
+      try {
+        waitingSocketRef.current.disconnect();
+      } catch {
+        /* ignore */
+      }
+      waitingSocketRef.current = null;
+    }
+  }, []);
+
+  const stopRideWaiting = React.useCallback(() => {
+    clearRideWaitingPoll();
+    disconnectRideWaitingSocket();
+  }, [clearRideWaitingPoll, disconnectRideWaitingSocket]);
+
+  const handleDriverAssignedForLiveTracking = React.useCallback(
+    (updatedRide: any, rideId: string) => {
+      if (acceptNavigatedRef.current) return;
+      const status = updatedRide?.status;
+      if (status !== 'accepted' && status !== 'in_progress') return;
+
+      const isScheduledRide = Boolean(updatedRide?.isScheduled || updatedRide?.scheduledFor);
+      if (isScheduledRide) {
+        acceptNavigatedRef.current = true;
+        stopRideWaiting();
+        setStep('location');
+        toast({
+          title: t('scheduled_ride_accepted_title'),
+          description: t('scheduled_ride_accepted_desc'),
+        });
+        return;
+      }
+
+      acceptNavigatedRef.current = true;
+      stopRideWaiting();
+      navigate(`/tracking/${rideId}`);
+    },
+    [navigate, stopRideWaiting, t]
+  );
 
   React.useEffect(() => {
     // Fetch + watch current user location (live)
@@ -77,12 +174,14 @@ const PassengerHome = () => {
           // Helpful when debugging "wrong city" reports
           console.log('[geo] currentPosition', { pos, accuracyM: position.coords.accuracy });
           // Only auto-fill pickup if user hasn't picked a custom pickup yet
-          setSource((prev) => prev ?? { name: 'Current Location', lat: pos[0], lng: pos[1] });
+          setSource((prev) => prev ?? { name: i18n.t('current_location'), lat: pos[0], lng: pos[1] });
 
           if (position.coords.accuracy > 2000) {
             toast({
-              title: 'Location seems approximate',
-              description: `Accuracy reported ~${Math.round(position.coords.accuracy)}m. Check Windows Location Services / Brave Shields.`,
+              title: i18n.t('location_approximate_title'),
+              description: i18n.t('location_approximate_desc', {
+                meters: Math.round(position.coords.accuracy),
+              }),
               variant: 'destructive',
             });
           }
@@ -117,26 +216,23 @@ const PassengerHome = () => {
 
     const checkActiveRide = async () => {
       try {
-        const userStr = localStorage.getItem('user');
-        const user = userStr ? JSON.parse(userStr) : null;
+        const user = getUser('passenger');
         if (!user) return;
 
-        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+        const API_URL = getApiOrigin();
         const response = await fetch(`${API_URL}/api/rides/user/${user._id}`);
         const rides = await response.json();
+        const now = Date.now();
 
         // Find any ride that isn't completed or cancelled
         const activeRide = rides.find((r: any) => {
           if (r.status === 'completed' || r.status === 'cancelled') return false;
-          // For scheduled rides, if they are just 'accepted', they aren't 'active' right now
-          // unless they are very close to the scheduled time (which scheduler handles by moving them to 'in_progress' or similar)
-          if (r.isScheduled && r.status === 'accepted') {
-            // Check if scheduled time is within next 15 mins to show tracking. 
-            // For now, let's keep it simple: scheduled rides don't block the home screen.
-            // Users can access them via Trip History until the driver is actually arriving.
-            return false; 
-          }
-          return ['pending', 'accepted', 'in_progress', 'scheduled'].includes(r.status) && r.status !== 'scheduled';
+          if (r.scheduledFor && new Date(r.scheduledFor).getTime() > now) return false;
+          const isScheduledRide = Boolean(r.isScheduled || r.scheduledFor);
+          // Scheduled rides never block immediate booking flow.
+          // They are managed in Prebookings and should not force tracking here.
+          if (isScheduledRide) return false;
+          return ['pending', 'accepted', 'in_progress'].includes(r.status);
         });
 
         if (activeRide) {
@@ -176,44 +272,68 @@ const PassengerHome = () => {
       if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
       }
+      clearRideWaitingPoll();
+      disconnectRideWaitingSocket();
     };
-  }, [navigate]);
+  }, [navigate, clearRideWaitingPoll, disconnectRideWaitingSocket]);
 
   const startPolling = (rideId: string) => {
-    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-    const interval = setInterval(async () => {
+    clearRideWaitingPoll();
+    const API_URL = getApiOrigin();
+    const tick = async () => {
       try {
         const rideRes = await fetch(`${API_URL}/api/rides/${rideId}`);
         const updatedRide = await rideRes.json();
-
-        if (updatedRide.status === 'accepted' || updatedRide.status === 'in_progress') {
-          clearInterval(interval);
-          if (updatedRide.isScheduled) {
-             setStep('location');
-             toast({
-               title: "Scheduled Ride Accepted",
-               description: "A driver has accepted your scheduled ride.",
-             });
-          } else {
-             setStep('found');
-             setTimeout(() => {
-               navigate(`/tracking/${rideId}`);
-             }, 1500);
-          }
-        }
+        handleDriverAssignedForLiveTracking(updatedRide, rideId);
       } catch (error) {
         console.error('Error polling ride status:', error);
       }
-    }, 3000);
-
-    return () => clearInterval(interval);
+    };
+    void tick();
+    pollingIntervalRef.current = setInterval(tick, 2500);
   };
+
+  React.useEffect(() => {
+    if (step !== 'searching' || !currentRideId) return;
+    acceptNavigatedRef.current = false;
+  }, [step, currentRideId]);
+
+  React.useEffect(() => {
+    if (step !== 'searching' || !currentRideId) return;
+    const rideId = currentRideId;
+    let cancelled = false;
+
+    import('socket.io-client').then(({ io }) => {
+      if (cancelled) return;
+      const API_URL = getApiOrigin();
+      const socket = API_URL === '' ? io() : io(API_URL);
+      if (cancelled) {
+        socket.disconnect();
+        return;
+      }
+      waitingSocketRef.current = socket;
+
+      const join = () => socket.emit('join_ride', rideId);
+      socket.on('connect', join);
+      if (socket.connected) join();
+
+      socket.on('ride_updated', (updatedRide: any) => {
+        if (!updatedRide || String(updatedRide._id) !== String(rideId)) return;
+        handleDriverAssignedForLiveTracking(updatedRide, rideId);
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      disconnectRideWaitingSocket();
+    };
+  }, [step, currentRideId, handleDriverAssignedForLiveTracking, disconnectRideWaitingSocket]);
 
   const handleVoiceInput = () => {
     if (isListening) return;
 
     setShowVoiceOverlay(true);
-    setInterimTranscript('Preparing microphone...');
+    setInterimTranscript(t('voice_prepare_mic'));
     setVoicePickup('');
     setVoiceDropoff('');
     setVoiceTranscript('');
@@ -246,12 +366,12 @@ const PassengerHome = () => {
       recorder.onstart = () => {
         recordingStartedAtRef.current = Date.now();
         setIsListening(true);
-        setInterimTranscript('Recording... Speak now.');
+        setInterimTranscript(t('voice_recording'));
       };
 
       recorder.onerror = (e) => {
         console.error('MediaRecorder error:', e);
-        setInterimTranscript('Recording error. Please try again.');
+        setInterimTranscript(t('voice_recording_error'));
         setIsListening(false);
       };
 
@@ -273,8 +393,8 @@ const PassengerHome = () => {
           // Some devices/browsers produce tiny but still valid blobs (especially with compressed opus).
           // Warn the user but continue to STT instead of hard-blocking.
           toast({
-            title: 'Low audio size detected',
-            description: 'Trying transcription anyway.',
+            title: t('low_audio_title'),
+            description: t('low_audio_desc'),
           });
         }
 
@@ -297,10 +417,10 @@ const PassengerHome = () => {
       recorder.start();
     } catch (error) {
       console.error('Mic capture error:', error);
-      setInterimTranscript('Microphone permission blocked or unavailable.');
+      setInterimTranscript(t('voice_permission_blocked'));
       toast({
-        title: 'Microphone error',
-        description: 'Allow microphone permission and try again.',
+        title: t('microphone_error_title'),
+        description: t('microphone_error_desc'),
         variant: 'destructive',
       });
       setIsListening(false);
@@ -311,7 +431,7 @@ const PassengerHome = () => {
     try {
       // Update UI immediately so user doesn't see a stuck "recording" screen
       setIsListening(false);
-      setInterimTranscript('Processing voice with AI...');
+      setInterimTranscript(t('voice_processing'));
 
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         stopHandledRef.current = false;
@@ -329,7 +449,7 @@ const PassengerHome = () => {
             const blob = new Blob(recordedChunksRef.current, { type: fallbackMime });
             recordedChunksRef.current = [];
             if (blob.size === 0) {
-              setInterimTranscript('No audio captured. Please try again.');
+              setInterimTranscript(t('voice_no_audio'));
               return;
             }
             const base64 = await new Promise<string>((resolve, reject) => {
@@ -345,18 +465,18 @@ const PassengerHome = () => {
             await processVoiceAudio(base64, blob.type || fallbackMime);
           } catch (e) {
             console.error('Fallback stop handling failed:', e);
-            setInterimTranscript('Could not process recording. Please try again.');
+            setInterimTranscript(t('voice_process_error'));
           }
         }, 4000);
       }
     } catch (e) {
       console.error('Stop recording failed:', e);
-      setInterimTranscript('Could not stop recording cleanly. Please try again.');
+      setInterimTranscript(t('voice_stop_error'));
     }
   };
 
   const applyVoiceResult = async (data: { pickup?: string; drop?: string; message?: string; audioData?: string | null; transcript?: string }) => {
-    const pickupLabel: string = data.pickup || 'Current Location';
+    const pickupLabel: string = data.pickup || i18n.t('current_location');
     const dropLabel: string = data.drop || '';
     setVoicePickup(pickupLabel);
     setVoiceDropoff(dropLabel);
@@ -365,30 +485,49 @@ const PassengerHome = () => {
       setSttTranscriptDisplay(data.transcript);
     }
 
-    const geocode = async (addr: string): Promise<{ lat: number; lng: number } | null> => {
-      try {
-        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(addr)}&countrycodes=in&limit=1`);
-        const d = await res.json();
-        if (d && d[0]) return { lat: parseFloat(d[0].lat), lng: parseFloat(d[0].lon) };
-      } catch (e) { }
+    const geocodePlaceSmart = async (addr: string): Promise<{ lat: number; lng: number } | null> => {
+      const trimmed = addr.replace(/[\u0964\.\s]+$/u, '').trim();
+      if (trimmed.length < 2) return null;
+      const variants = [trimmed, `${trimmed}, India`, `${trimmed}, Kerala, India`];
+      const seen = new Set<string>();
+      for (const q of variants) {
+        if (seen.has(q)) continue;
+        seen.add(q);
+        try {
+          const res = await fetch(
+            `${API_ORIGIN}/api/geocode/search?q=${encodeURIComponent(q)}&limit=5`
+          );
+          const d = await res.json();
+          if (!Array.isArray(d)) continue;
+          for (const row of d) {
+            const lat = parseFloat(row.lat);
+            const lng = parseFloat(row.lon);
+            if (Number.isFinite(lat) && Number.isFinite(lng) && isCoordInIndia(lat, lng)) {
+              return { lat, lng };
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      }
       return null;
     };
 
     if (data.pickup) {
-      const coords = await geocode(data.pickup);
+      const coords = await geocodePlaceSmart(data.pickup);
       if (coords) setSource({ name: data.pickup, lat: coords.lat, lng: coords.lng });
-      else if (liveUserPosition) setSource({ name: 'Current Location', lat: liveUserPosition[0], lng: liveUserPosition[1] });
+      else if (liveUserPosition) setSource({ name: i18n.t('current_location'), lat: liveUserPosition[0], lng: liveUserPosition[1] });
     } else if (liveUserPosition) {
-      setSource({ name: 'Current Location', lat: liveUserPosition[0], lng: liveUserPosition[1] });
+      setSource({ name: i18n.t('current_location'), lat: liveUserPosition[0], lng: liveUserPosition[1] });
     }
 
     if (data.drop) {
-      const coords = await geocode(data.drop);
+      const coords = await geocodePlaceSmart(data.drop);
       if (coords) setDestination({ name: data.drop, lat: coords.lat, lng: coords.lng });
       else {
         toast({
-          title: 'Destination not found',
-          description: `Couldn't locate "${data.drop}". Try a nearby landmark.`,
+          title: t('destination_not_found_title'),
+          description: t('destination_not_found_desc', { place: data.drop }),
           variant: 'destructive',
         });
       }
@@ -402,9 +541,9 @@ const PassengerHome = () => {
   };
 
   const processVoiceAudio = async (audioBase64: string, mimeType: string) => {
-    setInterimTranscript('Processing voice with AI...');
+    setInterimTranscript(t('voice_processing'));
     try {
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const API_URL = getApiOrigin();
       const normalizedMime = (mimeType || 'audio/webm').split(';')[0].trim();
       const extension = normalizedMime.includes('ogg') ? 'ogg' : normalizedMime.includes('mp4') ? 'mp4' : 'webm';
       const requestBody = JSON.stringify({
@@ -444,13 +583,13 @@ const PassengerHome = () => {
         throw new Error(`Voice service returned invalid response (${response.status})`);
       }
       if (!data.success) {
-        setInterimTranscript(data.message || 'Voice processing failed. Try again.');
+        setInterimTranscript(data.message || t('voice_processing_failed'));
         return;
       }
       await applyVoiceResult({ ...data, transcript: data.transcript || '' });
     } catch (error) {
       console.error('Voice audio processing error:', error);
-      setInterimTranscript('Error connecting to voice service.');
+      setInterimTranscript(t('voice_service_error'));
     }
   };
 
@@ -465,16 +604,15 @@ const PassengerHome = () => {
     return Math.round(distKm * 15 + 20); // 20 base + 15 per km
   };
 
-  const handleConfirmBooking = async () => {
+  const handleConfirmBooking = async (options?: { scheduledFor?: Date | null }) => {
     try {
-      setStep('searching');
-      const userStr = localStorage.getItem('user');
-      const user = userStr ? JSON.parse(userStr) : null;
+      const user = getUser('passenger');
+      if (!user?._id) throw new Error('Passenger session not found');
 
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const API_URL = getApiOrigin();
 
       if (!source || !destination) {
-        toast({ title: "Error", description: "Please select both locations.", variant: "destructive" });
+        toast({ title: t('error'), description: t('select_both_locations'), variant: "destructive" });
         setStep('location');
         return;
       }
@@ -601,7 +739,6 @@ const PassengerHome = () => {
         },
         fare: {
           estimated: estFare,
-          currency: 'INR'
         },
         distance: {
           value: parseFloat(dist.toFixed(1)),
@@ -615,10 +752,19 @@ const PassengerHome = () => {
         voiceTranscript: voiceTranscript || null
       };
 
-      if (isScheduled && scheduledFor) {
+      const effectiveScheduledFor = options?.scheduledFor ?? (isScheduled ? scheduledFor : null);
+      const SCHEDULE_MIN_LEAD_MS = 5 * 60 * 1000;
+      if (effectiveScheduledFor) {
+        if (effectiveScheduledFor.getTime() < Date.now() + SCHEDULE_MIN_LEAD_MS) {
+          toast({
+            title: t('pickup_time_too_soon'),
+            description: t('pickup_time_too_soon_desc'),
+            variant: 'destructive',
+          });
+          return;
+        }
         requestPayload.isScheduled = true;
-        requestPayload.scheduledFor = scheduledFor.toISOString();
-        // Skip setting step to searching if we are just scheduling it for the future
+        requestPayload.scheduledFor = effectiveScheduledFor.toISOString();
       } else {
         setStep('searching');
       }
@@ -627,27 +773,36 @@ const PassengerHome = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+          'Authorization': `Bearer ${getAuthToken('passenger')}`
         },
         body: JSON.stringify(requestPayload)
       });
 
-      if (!response.ok) throw new Error('Failed to create ride');
+      if (!response.ok) {
+        let detail = 'Failed to create ride';
+        try {
+          const errBody = await response.json();
+          if (errBody?.message && typeof errBody.message === 'string') detail = errBody.message;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(detail);
+      }
 
       const ride = await response.json();
-      setCurrentRideId(ride._id);
 
       // If scheduled ride, show success directly without polling
-      if (isScheduled) {
+      if (effectiveScheduledFor) {
         toast({
-          title: "Ride Scheduled",
-          description: `Your ride is scheduled for ${scheduledFor?.toLocaleTimeString()}`,
+          title: t('ride_scheduled_title'),
+          description: t('ride_scheduled_desc', { time: effectiveScheduledFor.toLocaleString() }),
         });
         setStep('location');
         setDestination(null);
         setIsScheduled(false);
         setScheduledFor(null);
       } else {
+        setCurrentRideId(ride._id);
         // Start polling for driver acceptance
         startPolling(ride._id);
       }
@@ -656,8 +811,11 @@ const PassengerHome = () => {
       console.error('Error booking ride:', error);
       setStep('location');
       toast({
-        title: "Booking Failed",
-        description: "Could not create ride request. Please try again.",
+        title: t('booking_failed_title'),
+        description:
+          error instanceof Error
+            ? error.message
+            : t('booking_generic_error'),
         variant: "destructive"
       });
     }
@@ -667,20 +825,22 @@ const PassengerHome = () => {
     if (!currentRideId) return;
 
     try {
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const API_URL = getApiOrigin();
       const response = await fetch(`${API_URL}/api/rides/${currentRideId}/cancel`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+          'Authorization': `Bearer ${getAuthToken('passenger')}`
         }
       });
 
       if (!response.ok) throw new Error('Failed to cancel ride');
 
+      stopRideWaiting();
+
       toast({
-        title: "Ride Cancelled",
-        description: "Your ride request has been cancelled successfully."
+        title: t('ride_cancelled_title'),
+        description: t('ride_cancelled_desc')
       });
 
       // Reset state
@@ -691,8 +851,8 @@ const PassengerHome = () => {
     } catch (error) {
       console.error('Error cancelling ride:', error);
       toast({
-        title: "Cancellation Failed",
-        description: "Could not cancel the ride. Please try again.",
+        title: t('cancellation_failed_title'),
+        description: t('cancellation_failed_desc'),
         variant: "destructive"
       });
     }
@@ -706,15 +866,15 @@ const PassengerHome = () => {
 
     if (!isInsideIndia) {
       toast({
-        title: "Service Unavailable",
-        description: "Services are only available within India.",
+        title: t('service_unavailable_title'),
+        description: t('service_unavailable_india'),
         variant: "destructive",
       });
       return;
     }
 
     try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`);
+      const res = await fetch(`${API_ORIGIN}/api/geocode/reverse?lat=${lat}&lon=${lng}`);
       const data = await res.json();
       
       let placeName = "Selected on Map";
@@ -755,7 +915,9 @@ const PassengerHome = () => {
     setIsSearching(true);
     try {
       // Use Nominatim API for search, restricted to India
-      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=in&limit=5`);
+      const response = await fetch(
+        `${API_ORIGIN}/api/geocode/search?q=${encodeURIComponent(query)}&limit=5`
+      );
       const data = await response.json();
       setSearchResults(data);
     } catch (error) {
@@ -776,8 +938,8 @@ const PassengerHome = () => {
 
     if (!isInsideIndia) {
       toast({
-        title: "Service Unavailable",
-        description: "Services are only available within India.",
+        title: t('service_unavailable_title'),
+        description: t('service_unavailable_india'),
         variant: "destructive",
       });
       return;
@@ -931,8 +1093,8 @@ const PassengerHome = () => {
           {!searchResults.length && (
             <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[2010] w-full px-10 max-w-xs">
               <div className="bg-background/95 backdrop-blur-md p-4 rounded-2xl shadow-2xl border border-border text-center">
-                <p className="text-sm font-bold text-foreground">Tap on map or search</p>
-                <p className="text-xs text-muted-foreground mt-1">Select your exact location</p>
+                <p className="text-sm font-bold text-foreground">{t('tap_map_search')}</p>
+                <p className="text-xs text-muted-foreground mt-1">{t('select_exact_location')}</p>
               </div>
             </div>
           )}
@@ -985,25 +1147,37 @@ const PassengerHome = () => {
 
               {/* Quick destinations */}
               <div className="space-y-2">
-                <p className="text-sm font-medium text-muted-foreground">Recent Places</p>
+                <p className="text-sm font-medium text-muted-foreground">{t('recent_places')}</p>
                 <div className="flex gap-2 overflow-x-auto pb-2">
-                  {['Home', 'Office', 'Market', 'School'].map((place) => (
+                  {(
+                    [
+                      { geocode: 'Home', labelKey: 'quick_place_home' },
+                      { geocode: 'Office', labelKey: 'quick_place_office' },
+                      { geocode: 'Market', labelKey: 'quick_place_market' },
+                      { geocode: 'School', labelKey: 'quick_place_school' },
+                    ] as const
+                  ).map((item) => (
                     <button
-                      key={place}
+                      key={item.geocode}
                       onClick={async () => {
-                        // Quick destination forward geocode resolver
                         try {
-                          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(place)}&countrycodes=in&limit=1`);
+                          const res = await fetch(
+                            `${API_ORIGIN}/api/geocode/search?q=${encodeURIComponent(item.geocode)}&limit=1`
+                          );
                           const d = await res.json();
                           if (d && d[0]) {
-                            setDestination({ name: place, lat: parseFloat(d[0].lat), lng: parseFloat(d[0].lon) });
+                            setDestination({
+                              name: t(item.labelKey),
+                              lat: parseFloat(d[0].lat),
+                              lng: parseFloat(d[0].lon),
+                            });
                             setRouteStats(null);
                           }
-                        } catch(e) {}
+                        } catch (e) {}
                       }}
                       className="flex-shrink-0 px-4 py-2.5 bg-muted rounded-xl text-sm font-medium text-foreground hover:bg-accent transition-colors"
                     >
-                      {place}
+                      {t(item.labelKey)}
                     </button>
                   ))}
                 </div>
@@ -1013,7 +1187,7 @@ const PassengerHome = () => {
               {routeStats && source && destination && (
                 <div className="bg-muted p-4 rounded-xl flex items-center justify-between shadow-sm border border-border/50 animate-in fade-in slide-in-from-bottom-2">
                   <div>
-                    <p className="text-sm text-muted-foreground font-medium">Estimated Fare</p>
+                    <p className="text-sm text-muted-foreground font-medium">{t('estimated_fare')}</p>
                     <p className="text-2xl font-black text-foreground">₹{calculateFare(routeStats.distanceKm)}</p>
                   </div>
                   <div className="text-right">
@@ -1030,7 +1204,7 @@ const PassengerHome = () => {
                 onClick={() => handleVoiceInput()}
               >
                 <Mic className="w-5 h-5 text-primary" />
-                <span>Book with Voice</span>
+                <span>{t('book_with_voice')}</span>
               </Button>
 
               <div className="flex gap-3">
@@ -1038,9 +1212,12 @@ const PassengerHome = () => {
                   variant="outline"
                   className="w-1/2 bg-transparent/10"
                   disabled={!destination || !source}
-                  onClick={() => setShowSchedulePicker(true)}
+                  onClick={() => {
+                    setScheduledFor((prev) => prev ?? getDefaultScheduleTime());
+                    setShowSchedulePicker(true);
+                  }}
                 >
-                  Schedule Later
+                  {t('schedule_later')}
                 </Button>
                 <Button
                   variant="touch"
@@ -1054,7 +1231,7 @@ const PassengerHome = () => {
                     }
                   }}
                 >
-                  <span>Look for Ride</span>
+                  <span>{t('look_for_ride')}</span>
                   <ChevronRight className="w-5 h-5" />
                 </Button>
               </div>
@@ -1064,7 +1241,7 @@ const PassengerHome = () => {
                 <div className="fixed inset-0 z-[4000] bg-black/50 backdrop-blur-sm flex items-end justify-center animate-in fade-in duration-200">
                   <div className="bg-background w-full rounded-t-3xl p-6 shadow-2xl pb-10 transform transition-transform slide-in-from-bottom-full duration-300">
                     <div className="flex justify-between items-center mb-6">
-                      <h3 className="text-xl font-bold">Schedule Ride</h3>
+                      <h3 className="text-xl font-bold">{t('schedule_ride')}</h3>
                       <Button variant="ghost" size="icon" onClick={() => setShowSchedulePicker(false)}>
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
                       </Button>
@@ -1072,12 +1249,12 @@ const PassengerHome = () => {
                     
                     <div className="space-y-6">
                       <div>
-                        <label className="block text-sm font-medium text-muted-foreground mb-2">Select Time</label>
+                        <label className="block text-sm font-medium text-muted-foreground mb-2">{t('select_time')}</label>
                         <input 
                           type="datetime-local" 
                           className="w-full h-14 px-4 bg-muted rounded-xl border-none focus:ring-2 focus:ring-primary text-lg"
-                          defaultValue={new Date(Date.now() + 30 * 60000).toISOString().slice(0, 16)} // Suggest 30 mins from now
-                          min={new Date().toISOString().slice(0, 16)}
+                          value={scheduledFor ? toDatetimeLocalValue(scheduledFor) : toDatetimeLocalValue(getDefaultScheduleTime())}
+                          min={toDatetimeLocalValue(new Date(Date.now() + 5 * 60 * 1000))}
                           onChange={(e) => {
                             if (e.target.value) {
                               setScheduledFor(new Date(e.target.value));
@@ -1089,16 +1266,22 @@ const PassengerHome = () => {
                       <Button 
                         className="w-full h-14 text-lg font-bold"
                         onClick={() => {
-                          if (scheduledFor) {
-                            setIsScheduled(true);
-                            setShowSchedulePicker(false);
-                            handleConfirmBooking();
-                          } else {
-                            toast({ title: "Select a time", description: "Please select a valid time for scheduling." });
+                          const finalScheduledFor = scheduledFor ?? getDefaultScheduleTime();
+                          const minAt = Date.now() + 5 * 60 * 1000;
+                          if (!finalScheduledFor || finalScheduledFor.getTime() < minAt) {
+                            toast({
+                              title: t('invalid_time_title'),
+                              description: t('invalid_time_desc'),
+                              variant: 'destructive',
+                            });
+                            return;
                           }
+                          setIsScheduled(true);
+                          setShowSchedulePicker(false);
+                          handleConfirmBooking({ scheduledFor: finalScheduledFor });
                         }}
                       >
-                        Confirm Scheduled Ride
+                        {t('confirm_scheduled_ride')}
                       </Button>
                     </div>
                   </div>
@@ -1121,7 +1304,7 @@ const PassengerHome = () => {
                 className="w-full"
                 onClick={handleConfirmBooking}
               >
-                <span>Book Auto</span>
+                <span>{t('book_auto')}</span>
               </Button>
 
               <Button
@@ -1129,7 +1312,7 @@ const PassengerHome = () => {
                 className="w-full"
                 onClick={() => setStep('location')}
               >
-                Change Destination
+                {t('change_destination')}
               </Button>
             </>
           )}
@@ -1140,9 +1323,23 @@ const PassengerHome = () => {
                 <AutoRickshaw className="text-primary" size={48} />
               </div>
               <div>
-                <p className="text-xl font-bold text-foreground">Finding your auto...</p>
-                <p className="text-muted-foreground mt-1">Waiting for a driver to accept...</p>
+                <p className="text-xl font-bold text-foreground">{t('finding_your_auto')}</p>
+                <p className="text-muted-foreground mt-1">{t('waiting_driver_accept')}</p>
               </div>
+
+              {waitingFareMeta && (
+                <div className="rounded-2xl border border-primary/20 bg-primary/5 backdrop-blur-md px-5 py-4 text-left shadow-sm">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {t('estimated_fare')}
+                  </p>
+                  <p className="text-3xl font-black text-foreground mt-1">₹{waitingFareMeta.fare}</p>
+                  <p className="text-sm text-muted-foreground mt-2">
+                    {waitingFareMeta.distanceStr}
+                    <span className="mx-2 text-border">·</span>
+                    {waitingFareMeta.durationStr}
+                  </p>
+                </div>
+              )}
 
               <div className="pt-4">
                 <Button
@@ -1150,28 +1347,12 @@ const PassengerHome = () => {
                   className="w-full border-destructive/20 text-destructive hover:bg-destructive/10 hover:text-destructive font-bold rounded-2xl h-14"
                   onClick={handleCancelRide}
                 >
-                  Cancel Ride
+                  {t('cancel_ride')}
                 </Button>
               </div>
             </div>
           )}
 
-          {step === 'found' && (
-            <div className="space-y-4 animate-fade-in">
-              <div className="text-center">
-                <p className="text-lg font-bold text-success">Auto Found!</p>
-              </div>
-
-              <Button
-                variant="touch"
-                className="w-full"
-                onClick={() => navigate(`/tracking/${currentRideId}`)}
-              >
-                <span>View Trip Details</span>
-                <ChevronRight className="w-5 h-5" />
-              </Button>
-            </div>
-          )}
         </div>
       </div>
 
@@ -1179,8 +1360,10 @@ const PassengerHome = () => {
       {showVoiceOverlay && (
         <div className="fixed inset-0 z-[3000] bg-background flex flex-col animate-in fade-in duration-300">
           <div className="absolute top-10 w-full text-center">
-            <h2 className="text-2xl font-bold text-foreground">Voice Booking</h2>
-            <p className="text-muted-foreground mt-2">{isListening ? 'Listening to your request...' : 'Voice AI booking'}</p>
+            <h2 className="text-2xl font-bold text-foreground">{t('voice_booking')}</h2>
+            <p className="text-muted-foreground mt-2">
+              {isListening ? t('voice_listening_subtitle') : t('voice_booking_subtitle')}
+            </p>
           </div>
 
           <div className="relative flex flex-col items-center justify-center h-64 gap-6 mt-24 flex-shrink-0">
@@ -1217,7 +1400,7 @@ const PassengerHome = () => {
               {sttTranscriptDisplay && (
                 <div className="bg-card/60 p-4 rounded-2xl border border-border/50 text-left">
                   <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-2">
-                    Transcribed
+                    {t('transcribed')}
                   </p>
                   <p className="text-base font-semibold text-foreground leading-relaxed break-words">
                     {sttTranscriptDisplay}

@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const earningSchema = new mongoose.Schema({
   driverId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: 'Driver',
     required: true,
     index: true
   },

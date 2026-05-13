@@ -1,18 +1,20 @@
 import React, { useState } from 'react';
 import { Phone, Share2, MapPin, Shield, X, AlertTriangle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/hooks/use-toast';
 
 const Emergency: React.FC = () => {
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const [isSharing, setIsSharing] = useState(false);
 
   const handleEmergencyCall = () => {
     toast({
-      title: "Calling Emergency Services",
-      description: "Connecting to 112...",
-      variant: "destructive",
+      title: t('emergency_services_toast_title'),
+      description: t('emergency_services_toast_desc'),
+      variant: 'destructive',
     });
   };
 
@@ -21,92 +23,76 @@ const Emergency: React.FC = () => {
     setTimeout(() => {
       setIsSharing(false);
       toast({
-        title: "Location Shared",
-        description: "Your emergency contacts have been notified with your live location.",
+        title: t('emergency_location_toast_title'),
+        description: t('emergency_location_toast_desc'),
       });
     }, 1500);
   };
 
   return (
     <div className="min-h-screen bg-destructive/5 flex flex-col">
-      {/* Header */}
       <header className="bg-card border-b border-border pt-safe-top">
         <div className="flex items-center justify-between h-16 px-4">
           <Button variant="icon" size="icon" onClick={() => navigate(-1)}>
             <X className="w-5 h-5" />
           </Button>
-          <h1 className="text-lg font-bold text-foreground">Safety Center</h1>
+          <h1 className="text-lg font-bold text-foreground">{t('safety_center')}</h1>
           <div className="w-12" />
         </div>
       </header>
-      
+
       <div className="flex-1 px-4 py-6 space-y-6">
-        {/* Emergency banner */}
         <div className="bg-destructive/10 border border-destructive/20 rounded-2xl p-5">
           <div className="flex items-start gap-4">
             <div className="w-12 h-12 bg-destructive/20 rounded-full flex items-center justify-center flex-shrink-0">
               <AlertTriangle className="w-6 h-6 text-destructive" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-foreground">Need Help?</h2>
-              <p className="text-sm text-muted-foreground mt-1">
-                If you're in immediate danger, call emergency services right away.
-              </p>
+              <h2 className="text-lg font-bold text-foreground">{t('need_help')}</h2>
+              <p className="text-sm text-muted-foreground mt-1">{t('emergency_need_help_body')}</p>
             </div>
           </div>
         </div>
-        
-        {/* Emergency call button - very prominent */}
-        <Button
-          variant="destructive"
-          className="w-full h-20 text-xl"
-          onClick={handleEmergencyCall}
-        >
+
+        <Button variant="destructive" className="w-full h-20 text-xl" onClick={handleEmergencyCall}>
           <Phone className="w-7 h-7 mr-3" />
-          Call Emergency (112)
+          {t('emergency_call_112')}
         </Button>
-        
-        {/* Share location */}
+
         <div className="card-elevated p-5 space-y-4">
           <div className="flex items-center gap-3">
             <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center">
               <Share2 className="w-6 h-6 text-primary" />
             </div>
             <div className="flex-1">
-              <h3 className="font-bold text-foreground">Share Live Location</h3>
-              <p className="text-sm text-muted-foreground">
-                Send your location to emergency contacts
-              </p>
+              <h3 className="font-bold text-foreground">{t('share_live_location')}</h3>
+              <p className="text-sm text-muted-foreground">{t('emergency_share_location_sub')}</p>
             </div>
           </div>
-          
-          <Button
-            variant="touchOutline"
-            className="w-full"
-            onClick={handleShareLocation}
-            disabled={isSharing}
-          >
+
+          <Button variant="touchOutline" className="w-full" onClick={handleShareLocation} disabled={isSharing}>
             {isSharing ? (
               <>
                 <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                <span>Sharing...</span>
+                <span>{t('sharing')}</span>
               </>
             ) : (
               <>
                 <MapPin className="w-5 h-5" />
-                <span>Share My Location</span>
+                <span>{t('share_my_location')}</span>
               </>
             )}
           </Button>
         </div>
-        
-        {/* Trusted contacts */}
+
         <div className="card-elevated p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="font-bold text-foreground">Emergency Contacts</h3>
-            <Button variant="ghost" size="sm">Add</Button>
+            <h3 className="font-bold text-foreground">{t('emergency_contacts')}</h3>
+            <Button variant="ghost" size="sm">
+              {t('add')}
+            </Button>
           </div>
-          
+
           <div className="space-y-3">
             {[
               { name: 'Mom', phone: '+91 98765 43210' },
@@ -127,26 +113,25 @@ const Emergency: React.FC = () => {
             ))}
           </div>
         </div>
-        
-        {/* Safety tips */}
+
         <div className="card-elevated p-5 space-y-4">
           <div className="flex items-center gap-3">
             <Shield className="w-6 h-6 text-success" />
-            <h3 className="font-bold text-foreground">Safety Tips</h3>
+            <h3 className="font-bold text-foreground">{t('safety_tips')}</h3>
           </div>
-          
+
           <ul className="space-y-3 text-sm text-muted-foreground">
             <li className="flex items-start gap-3">
               <div className="w-2 h-2 bg-primary rounded-full mt-1.5 flex-shrink-0" />
-              <span>Always verify the driver's photo and vehicle number before getting in</span>
+              <span>{t('safety_tip_verify_driver')}</span>
             </li>
             <li className="flex items-start gap-3">
               <div className="w-2 h-2 bg-primary rounded-full mt-1.5 flex-shrink-0" />
-              <span>Share your trip with family members for added safety</span>
+              <span>{t('safety_tip_share_trip')}</span>
             </li>
             <li className="flex items-start gap-3">
               <div className="w-2 h-2 bg-primary rounded-full mt-1.5 flex-shrink-0" />
-              <span>Use trusted driver mode for verified, background-checked drivers</span>
+              <span>{t('safety_tip_trusted')}</span>
             </li>
           </ul>
         </div>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { isAuthenticated, getUser, getAuthHeaders, clearAuth } from '@/lib/auth';
+import { getApiOrigin } from '@/lib/apiOrigin';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -15,11 +16,11 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allowedRole }
 
   useEffect(() => {
     const checkAuth = async () => {
-      const authenticated = isAuthenticated();
-      const user = getUser();
+      const authenticated = isAuthenticated(allowedRole);
+      const user = getUser(allowedRole);
 
       if (!authenticated || !user) {
-        clearAuth(); // Safety clear
+        clearAuth(allowedRole); // Safety clear
         if (location.pathname.startsWith('/driver')) {
           navigate('/driver/login', { replace: true });
         } else {
@@ -40,9 +41,9 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allowedRole }
 
       // Verify token with backend
       try {
-        const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+        const API_URL = getApiOrigin();
         const response = await fetch(`${API_URL}/api/auth/verify`, {
-          headers: getAuthHeaders()
+          headers: getAuthHeaders(allowedRole)
         });
 
         if (!response.ok) {
@@ -52,7 +53,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allowedRole }
         setIsValid(true);
       } catch (error) {
         console.error('Auth verification failed:', error);
-        clearAuth();
+        clearAuth(allowedRole);
         if (location.pathname.startsWith('/driver')) {
           navigate('/driver/login', { replace: true });
         } else {

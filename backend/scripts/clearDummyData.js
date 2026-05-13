@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
-import User from '../models/User.js';
+import Passenger from '../models/Passenger.js';
+import Driver from '../models/Driver.js';
 import Ride from '../models/Ride.js';
 import Earning from '../models/Earning.js';
 
@@ -17,8 +18,10 @@ const clearDummyData = async () => {
     console.log('🗑️  Clearing dummy data...');
 
     // Delete all users
-    const userResult = await User.deleteMany({});
-    console.log(`   Deleted ${userResult.deletedCount} users`);
+    const passengerResult = await Passenger.deleteMany({});
+    const driverResult = await Driver.deleteMany({});
+    console.log(`   Deleted ${passengerResult.deletedCount} passengers`);
+    console.log(`   Deleted ${driverResult.deletedCount} drivers`);
 
     // Delete all rides
     const rideResult = await Ride.deleteMany({});

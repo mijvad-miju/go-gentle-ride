@@ -9,6 +9,10 @@ interface DriverCardProps {
   vehicleNumber: string;
   photoUrl?: string;
   eta: string;
+  /** Top banner title (default: "Arriving in") */
+  bannerTitle?: string;
+  /** Optional smaller line under the main ETA/value */
+  bannerHint?: string;
   isTrusted?: boolean;
   onCall?: () => void;
   onMessage?: () => void;
@@ -20,6 +24,8 @@ const DriverCard: React.FC<DriverCardProps> = ({
   vehicleNumber,
   photoUrl,
   eta,
+  bannerTitle = 'Arriving in',
+  bannerHint,
   isTrusted = false,
   onCall,
   onMessage,
@@ -28,8 +34,11 @@ const DriverCard: React.FC<DriverCardProps> = ({
     <div className="card-elevated p-5 space-y-4">
       {/* ETA Banner */}
       <div className="bg-primary/10 rounded-xl p-3 text-center">
-        <p className="text-sm text-primary font-medium">Arriving in</p>
+        <p className="text-sm text-primary font-medium">{bannerTitle}</p>
         <p className="text-2xl font-bold text-primary">{eta}</p>
+        {bannerHint ? (
+          <p className="text-xs text-muted-foreground mt-1 font-medium">{bannerHint}</p>
+        ) : null}
       </div>
       
       {/* Driver info */}

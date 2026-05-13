@@ -11,15 +11,15 @@ import { toast } from '@/hooks/use-toast';
 const Profile: React.FC = () => {
     const navigate = useNavigate();
     const { t } = useTranslation();
-    const user = getUser();
+    const user = getUser('passenger');
 
     const handleLogout = () => {
-        clearAuth();
+        clearAuth('passenger');
         toast({
             title: t('sign_out'),
             description: t('sign_out')
         });
-        navigate('/');
+        navigate('/passenger/login');
     };
 
     if (!user) return null;
@@ -92,7 +92,7 @@ const Profile: React.FC = () => {
                     <Card className="border-border/50">
                         <CardContent className="p-0">
                             {[
-                                { icon: Bell, label: t('recording'), color: 'text-blue-500' }, // Use valid keys
+                                { icon: Bell, label: t('notifications_settings'), color: 'text-blue-500' },
                                 { icon: SettingsIcon, label: t('settings'), color: 'text-gray-500', path: '/passenger/settings' },
                             ].map((item, idx) => (
                                 <button 

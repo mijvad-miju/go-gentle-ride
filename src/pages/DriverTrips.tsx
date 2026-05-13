@@ -4,11 +4,14 @@ import { ChevronRight, Calendar, Clock, User, IndianRupee } from 'lucide-react';
 import Header from '@/components/common/Header';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { getUser } from '@/lib/auth';
+import { getAuthToken, getUser } from '@/lib/auth';
+import { getApiOrigin } from '@/lib/apiOrigin';
 
 interface Ride {
     _id: string;
-    status: 'pending' | 'accepted' | 'arriving' | 'in_progress' | 'completed' | 'cancelled';
+    status: 'pending' | 'scheduled' | 'accepted' | 'arriving' | 'in_progress' | 'completed' | 'cancelled';
+    isScheduled?: boolean;
+    scheduledFor?: string;
     pickupLocation: {
         address: string;
     };
@@ -31,24 +34,32 @@ const DriverTrips: React.FC = () => {
     const navigate = useNavigate();
     const [rides, setRides] = useState<Ride[]>([]);
     const [loading, setLoading] = useState(true);
-    const user = getUser();
+    const user = getUser('driver');
 
     useEffect(() => {
         const fetchDriverTrips = async () => {
             if (!user || user.role !== 'driver') return;
 
             try {
-                const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+                const API_URL = getApiOrigin();
                 const response = await fetch(`${API_URL}/api/rides/user/${user._id}`, {
                     headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+                        'Authorization': `Bearer ${getAuthToken('driver')}`
                     }
                 });
 
                 if (response.ok) {
                     const data = await response.json();
-                    // Filter or sort can be done here if needed
-                    setRides(data);
+                    const now = new Date();
+                    const filteredRides = data.filter((ride: Ride) => {
+                        const isFutureScheduledAccepted =
+                            ride.isScheduled &&
+                            ride.status === 'accepted' &&
+                            ride.scheduledFor &&
+                            new Date(ride.scheduledFor) > now;
+                        return !isFutureScheduledAccepted;
+                    });
+                    setRides(filteredRides);
                 }
             } catch (error) {
                 console.error('Error fetching driver trips:', error);

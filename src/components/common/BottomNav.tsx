@@ -3,7 +3,8 @@ import { Home, Clock, User, Wallet, Calendar } from 'lucide-react';
 
 interface NavItem {
   icon: React.ReactNode;
-  label: string;
+  /** i18n key under `translation` */
+  tKey: string;
   path?: string;
   isActive?: boolean;
   onClick?: () => void;
@@ -29,7 +30,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ items }) => {
             ? item.isActive
             : (item.path ? location.pathname === item.path : false);
 
-          const translatedLabel = t(item.label.toLowerCase().replace(' ', '_'));
+          const translatedLabel = t(item.tKey);
 
           return (
             <button
@@ -56,7 +57,7 @@ const BottomNav: React.FC<BottomNavProps> = ({ items }) => {
               `}>
                 {isActive ? item.icon : item.icon}
               </div>
-              <span className="text-xs font-medium">{translatedLabel || item.label}</span>
+              <span className="text-xs font-medium">{translatedLabel}</span>
             </button>
           );
         })}
@@ -67,18 +68,18 @@ const BottomNav: React.FC<BottomNavProps> = ({ items }) => {
 
 // Pre-built nav configs
 export const passengerNavItems: NavItem[] = [
-  { icon: <Home className="w-5 h-5" />, label: 'Home', path: '/passenger' },
-  { icon: <Calendar className="w-5 h-5" />, label: 'Prebookings', path: '/passenger/prebookings' },
-  { icon: <Clock className="w-5 h-5" />, label: 'Trips', path: '/passenger/trips' },
-  { icon: <User className="w-5 h-5" />, label: 'Profile', path: '/passenger/profile' },
+  { icon: <Home className="w-5 h-5" />, tKey: 'home', path: '/passenger' },
+  { icon: <Calendar className="w-5 h-5" />, tKey: 'prebookings', path: '/passenger/prebookings' },
+  { icon: <Clock className="w-5 h-5" />, tKey: 'trips', path: '/passenger/trips' },
+  { icon: <User className="w-5 h-5" />, tKey: 'profile', path: '/passenger/profile' },
 ];
 
 export const driverNavItems: NavItem[] = [
-  { icon: <Home className="w-5 h-5" />, label: 'Home', path: '/driver' },
-  { icon: <Wallet className="w-5 h-5" />, label: 'Earnings', path: '/driver/earnings' },
-  { icon: <Calendar className="w-5 h-5" />, label: 'Prebookings', path: '/driver/prebookings' },
-  { icon: <Clock className="w-5 h-5" />, label: 'Trips', path: '/driver/trips' },
-  { icon: <User className="w-5 h-5" />, label: 'Profile', path: '/driver/profile' },
+  { icon: <Home className="w-5 h-5" />, tKey: 'home', path: '/driver' },
+  { icon: <Wallet className="w-5 h-5" />, tKey: 'earnings', path: '/driver/earnings' },
+  { icon: <Calendar className="w-5 h-5" />, tKey: 'prebookings', path: '/driver/prebookings' },
+  { icon: <Clock className="w-5 h-5" />, tKey: 'trips', path: '/driver/trips' },
+  { icon: <User className="w-5 h-5" />, tKey: 'profile', path: '/driver/profile' },
 ];
 
 export default BottomNav;

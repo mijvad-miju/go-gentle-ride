@@ -1,54 +1,93 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Header from '@/components/common/Header';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/hooks/use-toast';
 import { Calendar, MapPin, Clock } from 'lucide-react';
+import { getAuthToken, getUser } from '@/lib/auth';
+import { getApiOrigin } from '@/lib/apiOrigin';
+import { io } from 'socket.io-client';
+
+function hasDriverAssigned(ride: any): boolean {
+  if (ride.driverId == null) return false;
+  if (typeof ride.driverId === 'object') return Object.keys(ride.driverId).length > 0;
+  return true;
+}
 
 const PassengerPrebooks: React.FC = () => {
-  const [scheduledRides, setScheduledRides] = useState<any[]>([]);
+  const [confirmedRides, setConfirmedRides] = useState<any[]>([]);
+  const [awaitingRides, setAwaitingRides] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchScheduledRides = async () => {
+  const fetchScheduledRides = useCallback(async (opts?: { quiet?: boolean }) => {
+    if (!opts?.quiet) setIsLoading(true);
     try {
-      const userStr = localStorage.getItem('user');
-      if (!userStr) return;
-      const user = JSON.parse(userStr);
+      const user = getUser('passenger');
+      if (!user) return;
 
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const API_URL = getApiOrigin();
       const response = await fetch(`${API_URL}/api/rides/user/${user._id}`);
       const data = await response.json();
 
-      // Filter only scheduled rides that are either pending or accepted, but not completed/cancelled
-      const futureRides = data.filter((ride: any) => 
-        ride.isScheduled === true && 
-        ['pending', 'scheduled', 'accepted'].includes(ride.status)
-      );
+      const now = Date.now();
+      const base = (ride: any) =>
+        ride.isScheduled === true &&
+        ['scheduled', 'accepted'].includes(ride.status) &&
+        ride.scheduledFor &&
+        new Date(ride.scheduledFor).getTime() > now;
 
-      setScheduledRides(futureRides);
+      const futureScheduled = data.filter(base);
+
+      setConfirmedRides(futureScheduled.filter((ride: any) => hasDriverAssigned(ride)));
+      setAwaitingRides(futureScheduled.filter((ride: any) => !hasDriverAssigned(ride)));
     } catch (error) {
       console.error('Error fetching scheduled rides:', error);
-      toast({
-        title: "Error",
-        description: "Could not load prebooked trips.",
-        variant: "destructive"
-      });
+      if (!opts?.quiet) {
+        toast({
+          title: "Error",
+          description: "Could not load prebooked trips.",
+          variant: "destructive"
+        });
+      }
     } finally {
-      setIsLoading(false);
+      if (!opts?.quiet) setIsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchScheduledRides();
-  }, []);
+
+    const user = getUser('passenger');
+    if (!user?._id) return;
+
+    const poll = setInterval(() => fetchScheduledRides({ quiet: true }), 6000);
+
+    const API_URL = getApiOrigin();
+    const socket = API_URL === '' ? io() : io(API_URL);
+    const joinRoom = () => socket.emit('join_passenger_room', user._id);
+    socket.on('connect', joinRoom);
+    if (socket.connected) joinRoom();
+    socket.on('prebook_driver_assigned', () => {
+      fetchScheduledRides({ quiet: true });
+      toast({
+        title: 'Driver assigned',
+        description: 'Your prebooking is confirmed. Details are below.',
+      });
+    });
+
+    return () => {
+      clearInterval(poll);
+      socket.disconnect();
+    };
+  }, [fetchScheduledRides]);
 
   const handleCancelRide = async (rideId: string) => {
     try {
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const API_URL = getApiOrigin();
       const response = await fetch(`${API_URL}/api/rides/${rideId}/cancel`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+          'Authorization': `Bearer ${getAuthToken('passenger')}`
         }
       });
 
@@ -59,8 +98,7 @@ const PassengerPrebooks: React.FC = () => {
         description: "Your scheduled ride has been cancelled successfully."
       });
 
-      // Refresh list
-      fetchScheduledRides();
+      fetchScheduledRides({ quiet: true });
     } catch (error) {
       console.error('Error cancelling ride:', error);
       toast({
@@ -80,19 +118,69 @@ const PassengerPrebooks: React.FC = () => {
           <div className="flex justify-center items-center py-20">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
           </div>
-        ) : scheduledRides.length === 0 ? (
+        ) : awaitingRides.length === 0 && confirmedRides.length === 0 ? (
           <div className="text-center py-20 animate-fade-in">
             <div className="w-20 h-20 bg-muted rounded-full flex items-center justify-center mx-auto mb-4">
               <Calendar className="w-10 h-10 text-muted-foreground" />
             </div>
             <h3 className="text-lg font-bold mb-2">No Prebooked Rides</h3>
             <p className="text-muted-foreground">
-              You don't have any upcoming scheduled trips. Map out your next journey on the home page!
+              After you schedule a pickup from home, it stays open for drivers to accept. Once someone accepts, the full details and driver info appear here.
             </p>
           </div>
         ) : (
-          <div className="space-y-4">
-            {scheduledRides.map((ride) => (
+          <div className="space-y-6">
+            {awaitingRides.length > 0 && (
+              <section className="space-y-3">
+                <h2 className="text-sm font-bold text-muted-foreground uppercase tracking-wide px-1">
+                  Awaiting a driver
+                </h2>
+                <p className="text-xs text-muted-foreground px-1 -mt-1">
+                  Drivers are notified. You can cancel if your plans change.
+                </p>
+                {awaitingRides.map((ride) => (
+                  <div key={ride._id} className="card-elevated p-4 animate-scale-in border border-border/60">
+                    <div className="flex justify-between items-start gap-3 mb-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Clock className="w-4 h-4 text-primary shrink-0" />
+                        <div className="min-w-0">
+                          <p className="font-semibold text-foreground text-sm truncate">
+                            {new Date(ride.scheduledFor).toLocaleString(undefined, {
+                              weekday: 'short',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </p>
+                          <p className="text-xs text-muted-foreground line-clamp-1">{ride.pickupLocation.address}</p>
+                        </div>
+                      </div>
+                      <span className="text-xs font-bold uppercase px-2 py-1 rounded-full bg-secondary/10 text-secondary shrink-0">
+                        Open
+                      </span>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full border-destructive/20 text-destructive hover:bg-destructive/10"
+                      onClick={() => handleCancelRide(ride._id)}
+                    >
+                      Cancel request
+                    </Button>
+                  </div>
+                ))}
+              </section>
+            )}
+
+            {confirmedRides.length > 0 && (
+              <section className="space-y-3">
+                {awaitingRides.length > 0 && (
+                  <h2 className="text-sm font-bold text-muted-foreground uppercase tracking-wide px-1 pt-2">
+                    Confirmed prebookings
+                  </h2>
+                )}
+                {confirmedRides.map((ride) => (
               <div key={ride._id} className="card-elevated p-5 animate-scale-in">
                 <div className="flex justify-between items-start mb-4">
                   <div className="flex items-center gap-2">
@@ -108,10 +196,8 @@ const PassengerPrebooks: React.FC = () => {
                     </div>
                   </div>
                   <div className="text-right">
-                    <span className={`text-xs font-bold uppercase px-2 py-1 rounded-full ${
-                      ride.status === 'accepted' ? 'bg-success/10 text-success' : 'bg-secondary/10 text-secondary'
-                    }`}>
-                      {ride.status === 'accepted' ? 'Driver Confirmed' : 'Waiting for Driver'}
+                    <span className="text-xs font-bold uppercase px-2 py-1 rounded-full bg-success/10 text-success">
+                      Driver confirmed
                     </span>
                     <p className="font-bold mt-1">₹{ride.fare.estimated}</p>
                   </div>
@@ -145,7 +231,7 @@ const PassengerPrebooks: React.FC = () => {
                   <div className="mt-4 p-3 bg-muted rounded-xl flex items-center justify-between mb-4">
                      <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-full overflow-hidden bg-primary/20 flex items-center justify-center">
-                           <span className="font-bold text-primary">{ride.driverId.name.charAt(0)}</span>
+                           <span className="font-bold text-primary">{ride.driverId.name?.charAt(0) ?? '?'}</span>
                         </div>
                         <div>
                            <p className="font-bold text-sm">{ride.driverId.name}</p>
@@ -163,7 +249,9 @@ const PassengerPrebooks: React.FC = () => {
                   Cancel Prebooking
                 </Button>
               </div>
-            ))}
+                ))}
+              </section>
+            )}
           </div>
         )}
       </div>

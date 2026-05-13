@@ -1,5 +1,6 @@
 import express from 'express';
-import User from '../models/User.js';
+import Passenger from '../models/Passenger.js';
+import Driver from '../models/Driver.js';
 import Ride from '../models/Ride.js';
 import Earning from '../models/Earning.js';
 
@@ -9,7 +10,10 @@ const router = express.Router();
 router.delete('/clear-all-data', async (req, res) => {
   try {
     // Delete all users
-    const userResult = await User.deleteMany({});
+    const [passengerResult, driverResult] = await Promise.all([
+      Passenger.deleteMany({}),
+      Driver.deleteMany({})
+    ]);
     
     // Delete all rides
     const rideResult = await Ride.deleteMany({});
@@ -20,7 +24,9 @@ router.delete('/clear-all-data', async (req, res) => {
     res.json({
       message: 'All data cleared successfully',
       deleted: {
-        users: userResult.deletedCount,
+        users: passengerResult.deletedCount + driverResult.deletedCount,
+        passengers: passengerResult.deletedCount,
+        drivers: driverResult.deletedCount,
         rides: rideResult.deletedCount,
         earnings: earningResult.deletedCount
       }
@@ -37,9 +43,11 @@ router.delete('/clear-all-data', async (req, res) => {
 // Get database statistics
 router.get('/stats', async (req, res) => {
   try {
-    const userCount = await User.countDocuments();
-    const passengerCount = await User.countDocuments({ role: 'passenger' });
-    const driverCount = await User.countDocuments({ role: 'driver' });
+    const [passengerCount, driverCount] = await Promise.all([
+      Passenger.countDocuments(),
+      Driver.countDocuments()
+    ]);
+    const userCount = passengerCount + driverCount;
     const rideCount = await Ride.countDocuments();
     const earningCount = await Earning.countDocuments();
 

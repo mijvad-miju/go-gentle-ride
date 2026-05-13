@@ -1,7 +1,8 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
+import Passenger from '../models/Passenger.js';
+import Driver from '../models/Driver.js';
 
 const router = express.Router();
 
@@ -18,7 +19,11 @@ router.post('/register', async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUser = await User.findOne({ phone });
+    const [existingPassenger, existingDriver] = await Promise.all([
+      Passenger.findOne({ phone }),
+      Driver.findOne({ phone })
+    ]);
+    const existingUser = existingPassenger || existingDriver;
     if (existingUser) {
       return res.status(400).json({
         message: 'User with this phone number already exists'
@@ -30,12 +35,11 @@ router.post('/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
 
     // Create new user
-    const user = new User({
+    const user = new Passenger({
       name,
       phone,
       email: email || '',
-      password: hashedPassword,
-      role: 'passenger'
+      password: hashedPassword
     });
 
     const savedUser = await user.save();
@@ -79,7 +83,7 @@ router.post('/login', async (req, res) => {
     }
 
     // Find user by phone
-    const user = await User.findOne({ phone, role: 'passenger' });
+    const user = await Passenger.findOne({ phone });
     if (!user) {
       return res.status(401).json({
         message: 'Invalid phone number or password'
@@ -165,7 +169,11 @@ router.post('/driver/register', async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUser = await User.findOne({ phone });
+    const [existingPassenger, existingDriver] = await Promise.all([
+      Passenger.findOne({ phone }),
+      Driver.findOne({ phone })
+    ]);
+    const existingUser = existingPassenger || existingDriver;
     if (existingUser) {
       return res.status(400).json({
         message: 'User with this phone number already exists'
@@ -173,7 +181,7 @@ router.post('/driver/register', async (req, res) => {
     }
 
     // Check if vehicle number already exists
-    const existingVehicle = await User.findOne({
+    const existingVehicle = await Driver.findOne({
       'driverInfo.vehicleNumber': vehicleNumber.toUpperCase()
     });
     if (existingVehicle) {
@@ -187,14 +195,13 @@ router.post('/driver/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
 
     // Create new driver user
-    const user = new User({
+    const user = new Driver({
       name,
       phone,
       email: email || '',
       password: hashedPassword,
       gender: gender || '',
       address: address || {},
-      role: 'driver',
       driverInfo: {
         licenseNumber,
         vehicleNumber: vehicleNumber.toUpperCase(),
@@ -251,7 +258,7 @@ router.post('/driver/login', async (req, res) => {
     }
 
     // Find user by phone and role
-    const user = await User.findOne({ phone, role: 'driver' });
+    const user = await Driver.findOne({ phone });
     if (!user) {
       return res.status(401).json({
         message: 'Invalid phone number or password'
@@ -307,7 +314,8 @@ router.get('/verify', async (req, res) => {
       process.env.JWT_SECRET || 'your-secret-key-change-in-production'
     );
 
-    const user = await User.findById(decoded.userId).select('-password');
+    const userModel = decoded.role === 'driver' ? Driver : Passenger;
+    const user = await userModel.findById(decoded.userId).select('-password');
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -319,4 +327,3 @@ router.get('/verify', async (req, res) => {
 });
 
 export default router;
-

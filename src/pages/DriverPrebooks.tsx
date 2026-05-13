@@ -3,6 +3,19 @@ import Header from '@/components/common/Header';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/hooks/use-toast';
 import { Calendar, MapPin, Clock } from 'lucide-react';
+import { getAuthToken, getUser } from '@/lib/auth';
+import { getApiOrigin } from '@/lib/apiOrigin';
+import { io } from 'socket.io-client';
+
+const isDriverAssignedToRide = (ride: { driverId?: unknown }, userId: string | undefined) => {
+  if (!userId) return false;
+  const d = ride?.driverId as { _id?: unknown } | string | null | undefined;
+  if (d == null) return false;
+  if (typeof d === 'object' && '_id' in d && d._id != null) {
+    return String(d._id) === String(userId);
+  }
+  return String(d) === String(userId);
+};
 
 const DriverPrebooks: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'available' | 'accepted'>('available');
@@ -10,14 +23,13 @@ const DriverPrebooks: React.FC = () => {
   const [acceptedRides, setAcceptedRides] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchRides = async () => {
-    setIsLoading(true);
+  const fetchRides = async (opts?: { quiet?: boolean }) => {
+    if (!opts?.quiet) setIsLoading(true);
     try {
-      const userStr = localStorage.getItem('user');
-      if (!userStr) return;
-      const user = JSON.parse(userStr);
+      const user = getUser('driver');
+      if (!user) return;
 
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const API_URL = getApiOrigin();
 
       // Fetch Available Scheduled Rides
       const availableRes = await fetch(`${API_URL}/api/rides/scheduled/available`);
@@ -28,41 +40,66 @@ const DriverPrebooks: React.FC = () => {
       const acceptedRes = await fetch(`${API_URL}/api/rides/user/${user._id}`);
       const acceptedData = await acceptedRes.json();
       
-      const futureAccepted = acceptedData.filter((ride: any) => 
-        ride.isScheduled === true && 
-        ride.status === 'accepted' &&
-        ride.driverId?._id === user._id
-      );
-      
+      const now = Date.now();
+      const futureAccepted = acceptedData.filter((ride: any) => {
+        if (ride.isScheduled !== true) return false;
+        if (!['accepted', 'scheduled'].includes(ride.status)) return false;
+        if (!isDriverAssignedToRide(ride, user._id)) return false;
+        if (!ride.scheduledFor) return false;
+        // Pickup time reached = active on dashboard — no longer a "commitment" list item.
+        return new Date(ride.scheduledFor).getTime() > now;
+      });
+
       setAcceptedRides(futureAccepted);
     } catch (error) {
       console.error('Error fetching prebooked rides:', error);
-      toast({
-        title: "Error",
-        description: "Could not load scheduled rides.",
-        variant: "destructive"
-      });
+      if (!opts?.quiet) {
+        toast({
+          title: "Error",
+          description: "Could not load scheduled rides.",
+          variant: "destructive"
+        });
+      }
     } finally {
-      setIsLoading(false);
+      if (!opts?.quiet) setIsLoading(false);
     }
   };
 
   useEffect(() => {
     fetchRides();
+
+    const poll = setInterval(() => fetchRides({ quiet: true }), 6000);
+
+    const API_URL = getApiOrigin();
+    const socket = API_URL === '' ? io() : io(API_URL);
+    socket.on('connect', () => socket.emit('join_driver_room'));
+    socket.on('new_scheduled_ride', () => {
+      fetchRides({ quiet: true });
+      toast({
+        title: 'New scheduled pickup',
+        description: 'Open Available tab to accept.',
+      });
+    });
+    socket.on('scheduled_ride_accepted', () => fetchRides({ quiet: true }));
+    socket.on('scheduled_ride_due', () => fetchRides({ quiet: true }));
+
+    return () => {
+      clearInterval(poll);
+      socket.disconnect();
+    };
   }, []);
 
   const handleAcceptRide = async (rideId: string) => {
     try {
-      const userStr = localStorage.getItem('user');
-      if (!userStr) return;
-      const user = JSON.parse(userStr);
+      const user = getUser('driver');
+      if (!user) return;
 
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const API_URL = getApiOrigin();
       const response = await fetch(`${API_URL}/api/rides/${rideId}/accept`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+          'Authorization': `Bearer ${getAuthToken('driver')}`
         },
         body: JSON.stringify({
           driverId: user._id
@@ -93,12 +130,12 @@ const DriverPrebooks: React.FC = () => {
     try {
       // In a real app we might revert it to 'scheduled' instead of cancelling,
       // but the current API only has a 'cancel' patch for drivers backing out.
-       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+       const API_URL = getApiOrigin();
        const response = await fetch(`${API_URL}/api/rides/${rideId}/cancel`, {
          method: 'PATCH',
          headers: {
            'Content-Type': 'application/json',
-           'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+           'Authorization': `Bearer ${getAuthToken('driver')}`
          }
        });
 
