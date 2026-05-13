@@ -22,8 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-. e n v 
+.env 
  
  K i t t e n T T S / 
- 
- .env
