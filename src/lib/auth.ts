@@ -7,6 +7,12 @@ export interface User {
   email?: string;
   role: 'passenger' | 'driver';
   profilePhoto?: string;
+  /** Lady-safety: user's own gender. */
+  gender?: 'male' | 'female' | 'other';
+  /** Lady-safety: passenger's preferred driver gender. */
+  preferredDriverGender?: 'male' | 'female' | 'any';
+  /** Lady-safety: driver's preferred passenger gender. */
+  preferredPassengerGender?: 'male' | 'female' | 'any';
   driverInfo?: {
     licenseNumber?: string;
     vehicleNumber?: string;
@@ -26,7 +32,12 @@ const USER_KEY = 'user';
 const getRoleFromPath = (): Role | undefined => {
   const pathname = window.location.pathname;
   if (pathname.startsWith('/driver')) return 'driver';
-  if (pathname.startsWith('/passenger') || pathname.startsWith('/booking') || pathname.startsWith('/tracking')) {
+  if (
+    pathname.startsWith('/passenger') ||
+    pathname.startsWith('/booking') ||
+    pathname.startsWith('/tracking') ||
+    pathname.startsWith('/emergency')
+  ) {
     return 'passenger';
   }
   return undefined;
@@ -35,7 +46,12 @@ const getRoleFromPath = (): Role | undefined => {
 const parseUser = (value: string | null): User | null => {
   if (!value) return null;
   try {
-    return JSON.parse(value);
+    const parsed = JSON.parse(value) as Partial<User> | null;
+    if (!parsed || typeof parsed !== 'object') return null;
+    // Hard validation: many flows require _id (booking, sockets, etc).
+    if (!parsed._id || typeof parsed._id !== 'string') return null;
+    if (parsed.role !== 'passenger' && parsed.role !== 'driver') return null;
+    return parsed as User;
   } catch {
     return null;
   }
@@ -113,6 +129,20 @@ export const getAuthHeaders = (role?: Role): HeadersInit => {
     'Content-Type': 'application/json',
     ...(token && { Authorization: `Bearer ${token}` })
   };
+};
+
+/** Merge new fields into the stored user object, preserving role-scoped storage. */
+export const updateStoredUser = (patch: Partial<User>): User | null => {
+  const current = getUser();
+  if (!current) return null;
+  const next: User = { ...current, ...patch };
+  localStorage.setItem(getScopedKey(USER_KEY, next.role), JSON.stringify(next));
+  // Keep legacy key in sync if it points at the same identity.
+  const legacy = parseUser(localStorage.getItem(USER_KEY));
+  if (legacy?._id === next._id) {
+    localStorage.setItem(USER_KEY, JSON.stringify(next));
+  }
+  return next;
 };
 
 

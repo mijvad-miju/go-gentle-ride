@@ -1,17 +1,21 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { User, Mail, Phone, Settings as SettingsIcon, LogOut, ChevronRight, Shield, Bell, HelpCircle } from 'lucide-react';
+import { User, Mail, Phone, Settings as SettingsIcon, LogOut, ChevronRight, ShieldCheck, Shield, Bell } from 'lucide-react';
 import Header from '@/components/common/Header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { clearAuth, getUser } from '@/lib/auth';
+import { clearAuth, getUser, updateStoredUser } from '@/lib/auth';
 import { toast } from '@/hooks/use-toast';
+import { getApiOrigin } from '@/lib/apiOrigin';
+import GenderCardGroup, { GenderValue } from '@/components/common/GenderCardGroup';
 
 const Profile: React.FC = () => {
     const navigate = useNavigate();
     const { t } = useTranslation();
-    const user = getUser('passenger');
+    const initialUser = getUser('passenger');
+    const [user, setUser] = useState(initialUser);
+    const [savingPref, setSavingPref] = useState<null | 'gender' | 'driverPref'>(null);
 
     const handleLogout = () => {
         clearAuth('passenger');
@@ -20,6 +24,35 @@ const Profile: React.FC = () => {
             description: t('sign_out')
         });
         navigate('/passenger/login');
+    };
+
+    const persistSafetyPref = async (
+        kind: 'gender' | 'driverPref',
+        payload: { gender?: GenderValue; preferredDriverGender?: GenderValue }
+    ) => {
+        if (!user) return;
+        setSavingPref(kind);
+        try {
+            const res = await fetch(`${getApiOrigin()}/api/users/${user._id}/safety-prefs`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data?.message || 'Could not save preference');
+
+            const next = updateStoredUser(payload as Partial<typeof user>);
+            if (next) setUser(next);
+            toast({ title: t('saved', 'Saved'), description: t('safety_pref_saved', 'Safety preference updated') });
+        } catch (e: any) {
+            toast({
+                title: t('error', 'Error'),
+                description: e?.message || 'Could not save',
+                variant: 'destructive'
+            });
+        } finally {
+            setSavingPref(null);
+        }
     };
 
     if (!user) return null;
@@ -83,6 +116,76 @@ const Profile: React.FC = () => {
                                 </div>
                             ))}
                         </CardContent>
+                    </Card>
+                </div>
+
+                {/* Safety preference (lady-safety) */}
+                <div className="space-y-3">
+                    <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-widest px-1 flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 text-primary" />
+                        {t('prefer_driver_gender_title', 'Safety preference')}
+                    </h3>
+                    <Card className="border-border/50 bg-card/40 backdrop-blur-xl">
+                        <CardContent className="p-4 space-y-4">
+                            {!user.gender && (
+                                <div className="rounded-xl border border-primary/30 bg-primary/10 backdrop-blur-md p-3">
+                                    <p className="text-xs font-semibold text-foreground mb-2">
+                                        {t('gender_required_label', 'Set your gender first')}
+                                    </p>
+                                    <GenderCardGroup
+                                        value={(user.gender ?? null) as GenderValue | null}
+                                        onChange={(v) => persistSafetyPref('gender', { gender: v })}
+                                        options={['female', 'male', 'other']}
+                                        size="sm"
+                                        disabled={savingPref === 'gender'}
+                                    />
+                                </div>
+                            )}
+
+                            <div>
+                                <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
+                                    {t(
+                                        'prefer_gender_note_passenger',
+                                        "We'll match you with this driver gender first. You can expand search later if none are available."
+                                    )}
+                                </p>
+                                <GenderCardGroup
+                                    value={(user.preferredDriverGender ?? 'any') as GenderValue}
+                                    onChange={(v) => persistSafetyPref('driverPref', { preferredDriverGender: v })}
+                                    options={['female', 'male', 'any']}
+                                    disabled={savingPref === 'driverPref'}
+                                />
+                            </div>
+                        </CardContent>
+                    </Card>
+                </div>
+
+                {/* Safety Center — emergency contacts, 112, share location (see /emergency) */}
+                <div className="space-y-3">
+                    <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-widest px-1 flex items-center gap-2">
+                        <Shield className="w-4 h-4 text-primary" />
+                        {t('safety_center')}
+                    </h3>
+                    <Card className="border-border/50 bg-card/40 backdrop-blur-xl overflow-hidden">
+                        <button
+                            type="button"
+                            onClick={() => navigate('/emergency')}
+                            className="w-full flex items-center gap-4 p-4 text-left hover:bg-primary/5 transition-colors"
+                        >
+                            <div className="w-10 h-10 bg-primary/15 rounded-xl flex items-center justify-center border border-primary/30">
+                                <Shield className="w-5 h-5 text-primary" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-sm font-semibold text-foreground">{t('safety_center')}</p>
+                                <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                                    {t(
+                                        'safety_center_profile_hint',
+                                        'Add emergency contacts, call 112, and share your live trip or location.'
+                                    )}
+                                </p>
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                        </button>
                     </Card>
                 </div>
 

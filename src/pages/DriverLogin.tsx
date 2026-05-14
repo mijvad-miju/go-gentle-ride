@@ -16,14 +16,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { toast } from '@/hooks/use-toast';
+import GenderCardGroup, { GenderValue } from '@/components/common/GenderCardGroup';
 
 type AuthMode = 'login' | 'register';
 
@@ -107,10 +101,10 @@ const DriverLogin: React.FC = () => {
     }
   };
 
-  const handleSelectChange = (name: string, value: string) => {
+  const handleGenderChange = (value: GenderValue) => {
     setFormData({
       ...formData,
-      [name]: value
+      gender: value
     });
   };
 
@@ -155,6 +149,15 @@ const DriverLogin: React.FC = () => {
           toast({
             title: 'Validation Error',
             description: 'Please fill in all required fields',
+            variant: 'destructive'
+          });
+          setLoading(false);
+          return;
+        }
+        if (!formData.gender) {
+          toast({
+            title: 'Please select your gender',
+            description: 'We use this to enforce safety preferences between drivers and passengers.',
             variant: 'destructive'
           });
           setLoading(false);
@@ -352,22 +355,14 @@ const DriverLogin: React.FC = () => {
                 </div>
               </div>
 
-              {/* Gender */}
+              {/* Gender — required for lady-safety matching */}
               <div className="space-y-2">
-                <Label htmlFor="gender">Gender</Label>
-                <Select
-                  value={formData.gender}
-                  onValueChange={(value) => handleSelectChange('gender', value)}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select gender" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="male">Male</SelectItem>
-                    <SelectItem value="female">Female</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Label>Gender *</Label>
+                <GenderCardGroup
+                  value={(formData.gender || null) as GenderValue | null}
+                  onChange={handleGenderChange}
+                  options={['female', 'male', 'other']}
+                />
               </div>
 
               {/* Vehicle Number */}

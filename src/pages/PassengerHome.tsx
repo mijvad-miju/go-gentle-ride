@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Mic, ChevronRight } from 'lucide-react';
+import { Mic, ChevronRight, Plus, GripVertical, X } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -18,6 +18,7 @@ import LocationInput from '@/components/passenger/LocationInput';
 import FareEstimate from '@/components/passenger/FareEstimate';
 import MapView from '@/components/passenger/MapView';
 import MapComponent from '@/components/MapComponent';
+import SafetyCard, { AnalyzedRoute } from '@/components/passenger/SafetyCard';
 import AutoRickshaw from '@/components/icons/AutoRickshaw';
 import { toast } from '@/hooks/use-toast';
 import { getAuthToken, getUser } from '@/lib/auth';
@@ -74,9 +75,35 @@ const PassengerHome = () => {
   // Route calculation state
   const [routeStats, setRouteStats] = useState<{distanceStr: string, durationStr: string, distanceKm: number} | null>(null);
 
+  // Route-safety state (Gemini-scored alternatives)
+  const [safetyRoutes, setSafetyRoutes] = useState<AnalyzedRoute[]>([]);
+  const [recommendedRouteId, setRecommendedRouteId] = useState<string | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [safetyLoading, setSafetyLoading] = useState(false);
+  const [safetyError, setSafetyError] = useState<string | null>(null);
+  const safetyAbortRef = React.useRef<AbortController | null>(null);
+
+  // Lady-safety: 60s expand-search prompt state.
+  const [currentRidePrefs, setCurrentRidePrefs] = useState<{
+    preferredDriverGender: 'male' | 'female' | 'any';
+    genderFilterActive: boolean;
+  } | null>(null);
+  const [searchStartedAt, setSearchStartedAt] = useState<number | null>(null);
+  const [showExpandPrompt, setShowExpandPrompt] = useState(false);
+  const [expanding, setExpanding] = useState(false);
+
+  // Multi-stop itinerary (booking-time stops only — mid-trip stops live on TripTracking).
+  // Max 5. We render numbered chips with drag-reorder + remove on the location step,
+  // and feed them to MapComponent for the multi-leg polyline + numbered pins.
+  type ItineraryStop = { id: string; name: string; lat: number; lng: number };
+  const [stops, setStops] = useState<ItineraryStop[]>([]);
+  const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
+  const MAX_BOOKING_STOPS = 5;
+
   // Map Popup State
   const [isMapOpen, setIsMapOpen] = useState(false);
-  const [activeField, setActiveField] = useState<'pickup' | 'dropoff'>('pickup');
+  // `activeField` extends to 'stop:<id>' so the same map picker can write to a specific stop slot.
+  const [activeField, setActiveField] = useState<'pickup' | 'dropoff' | `stop:${string}`>('pickup');
   const [interimTranscript, setInterimTranscript] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -163,56 +190,115 @@ const PassengerHome = () => {
   );
 
   React.useEffect(() => {
-    // Fetch + watch current user location (live)
+    // Fetch + watch current user location (live).
+    // We intentionally do NOT fall back to a hardcoded city when geolocation fails —
+    // a wrong default (e.g. Kochi) is worse than no map at all because it silently
+    // routes the user from the wrong pickup. We instead surface a toast that asks
+    // them to enable location or pick pickup manually.
     let watchId: number | null = null;
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const pos: [number, number] = [position.coords.latitude, position.coords.longitude];
-          setLiveUserPosition(pos);
-          setGeoAccuracyM(position.coords.accuracy);
-          // Helpful when debugging "wrong city" reports
-          console.log('[geo] currentPosition', { pos, accuracyM: position.coords.accuracy });
-          // Only auto-fill pickup if user hasn't picked a custom pickup yet
-          setSource((prev) => prev ?? { name: i18n.t('current_location'), lat: pos[0], lng: pos[1] });
-
-          if (position.coords.accuracy > 2000) {
-            toast({
-              title: i18n.t('location_approximate_title'),
-              description: i18n.t('location_approximate_desc', {
-                meters: Math.round(position.coords.accuracy),
-              }),
-              variant: 'destructive',
-            });
-          }
-        },
-        (error) => {
-          console.error('Error getting exact location:', error);
-          // Fallback to Kerala default if geolocation fails or is denied
-          setLiveUserPosition([9.9312, 76.2673]);
-          setSource((prev) => prev ?? { name: 'Kochi, Kerala', lat: 9.9312, lng: 76.2673 });
-        },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-      );
-
-      watchId = navigator.geolocation.watchPosition(
-        (position) => {
-          const pos: [number, number] = [position.coords.latitude, position.coords.longitude];
-          setLiveUserPosition(pos);
-          setGeoAccuracyM(position.coords.accuracy);
-          console.log('[geo] watchPosition', { pos, accuracyM: position.coords.accuracy });
-        },
-        (error) => {
-          console.error('Geolocation watch error:', error);
-        },
-        // Ensure we don't reuse a stale cached fix
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
-      );
-    } else {
-      // Fallback immediately if geolocation is unavailable
-      setLiveUserPosition([9.9312, 76.2673]);
-      setSource((prev) => prev ?? { name: 'Kochi, Kerala', lat: 9.9312, lng: 76.2673 });
+    if (!('geolocation' in navigator)) {
+      toast({
+        title: i18n.t('geolocation_unavailable', 'Location unavailable'),
+        description: i18n.t(
+          'geolocation_unavailable_desc',
+          'Pick your pickup manually using the map.'
+        ),
+        variant: 'destructive'
+      });
+      return;
     }
+
+    // Stage 1: try a fast cached fix (up to 5 min old) so the map shows
+    // *something* near the user immediately. We still upgrade to a fresh
+    // high-accuracy fix in stage 2.
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const pos: [number, number] = [position.coords.latitude, position.coords.longitude];
+        setLiveUserPosition(pos);
+        setGeoAccuracyM(position.coords.accuracy);
+        console.log('[geo] cached fix', { pos, accuracyM: position.coords.accuracy });
+        setSource((prev) => prev ?? { name: i18n.t('current_location'), lat: pos[0], lng: pos[1] });
+      },
+      () => {
+        // Ignore — stage 2 will retry with high accuracy.
+      },
+      { enableHighAccuracy: false, timeout: 4000, maximumAge: 5 * 60 * 1000 }
+    );
+
+    // Stage 2: high-accuracy fresh fix. This overrides whatever stage 1 gave us
+    // only if the user hasn't already picked a custom pickup.
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const pos: [number, number] = [position.coords.latitude, position.coords.longitude];
+        setLiveUserPosition(pos);
+        setGeoAccuracyM(position.coords.accuracy);
+        console.log('[geo] currentPosition', { pos, accuracyM: position.coords.accuracy });
+        setSource((prev) => {
+          // If the previously-set source was just the cached "current_location",
+          // upgrade it to the fresh fix. Don't overwrite a manually-picked pickup.
+          if (!prev || prev.name === i18n.t('current_location')) {
+            return { name: i18n.t('current_location'), lat: pos[0], lng: pos[1] };
+          }
+          return prev;
+        });
+
+        if (position.coords.accuracy > 2000) {
+          toast({
+            title: i18n.t('location_approximate_title'),
+            description: i18n.t('location_approximate_desc', {
+              meters: Math.round(position.coords.accuracy),
+            }),
+            variant: 'destructive',
+          });
+        }
+      },
+      (error) => {
+        console.error('Error getting exact location:', error);
+        const code = (error && (error as any).code) as number | undefined;
+        if (code === 1 /* PERMISSION_DENIED */) {
+          toast({
+            title: i18n.t('location_permission_denied_title', 'Location blocked'),
+            description: i18n.t(
+              'location_permission_denied_desc',
+              'Enable location in your browser settings to auto-fill pickup.'
+            ),
+            variant: 'destructive'
+          });
+        } else if (code === 3 /* TIMEOUT */) {
+          toast({
+            title: i18n.t('location_timeout_title', 'Could not locate you'),
+            description: i18n.t(
+              'location_timeout_desc',
+              'Pick your pickup manually using the map.'
+            ),
+            variant: 'destructive'
+          });
+        } else {
+          toast({
+            title: i18n.t('geolocation_unavailable', 'Location unavailable'),
+            description: i18n.t(
+              'geolocation_unavailable_desc',
+              'Pick your pickup manually using the map.'
+            ),
+            variant: 'destructive'
+          });
+        }
+      },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+    );
+
+    watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const pos: [number, number] = [position.coords.latitude, position.coords.longitude];
+        setLiveUserPosition(pos);
+        setGeoAccuracyM(position.coords.accuracy);
+        console.log('[geo] watchPosition', { pos, accuracyM: position.coords.accuracy });
+      },
+      (error) => {
+        console.error('Geolocation watch error:', error);
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
+    );
 
     const checkActiveRide = async () => {
       try {
@@ -282,7 +368,11 @@ const PassengerHome = () => {
     const API_URL = getApiOrigin();
     const tick = async () => {
       try {
-        const rideRes = await fetch(`${API_URL}/api/rides/${rideId}`);
+        const rideRes = await fetch(`${API_URL}/api/rides/${rideId}`, {
+          headers: {
+            Authorization: `Bearer ${getAuthToken('passenger')}`,
+          },
+        });
         const updatedRide = await rideRes.json();
         handleDriverAssignedForLiveTracking(updatedRide, rideId);
       } catch (error) {
@@ -297,6 +387,78 @@ const PassengerHome = () => {
     if (step !== 'searching' || !currentRideId) return;
     acceptNavigatedRef.current = false;
   }, [step, currentRideId]);
+
+  // Lady-safety: track whether the auto-prompt threshold (30s) has been crossed.
+  // The expand-search UI is shown immediately as a small inline link whenever a
+  // gender filter is active; after 30s it auto-promotes to a more prominent banner.
+  const [autoPromoted, setAutoPromoted] = useState(false);
+  React.useEffect(() => {
+    if (step !== 'searching' || !currentRideId || !searchStartedAt) {
+      setShowExpandPrompt(false);
+      setAutoPromoted(false);
+      return;
+    }
+    if (!currentRidePrefs) return;
+    if (currentRidePrefs.preferredDriverGender === 'any' || !currentRidePrefs.genderFilterActive) {
+      setShowExpandPrompt(false);
+      setAutoPromoted(false);
+      return;
+    }
+    // The prompt is always available when a filter is active — auto-promote after 30s
+    // so users who don't notice still see a prominent banner.
+    setShowExpandPrompt(true);
+    const elapsed = Date.now() - searchStartedAt;
+    if (elapsed >= 30_000) {
+      setAutoPromoted(true);
+      return;
+    }
+    const timeout = setTimeout(() => setAutoPromoted(true), 30_000 - elapsed);
+    return () => clearTimeout(timeout);
+  }, [step, currentRideId, searchStartedAt, currentRidePrefs]);
+
+  const handleExpandSearch = React.useCallback(async () => {
+    if (!currentRideId || expanding) return;
+    setExpanding(true);
+    try {
+      const API_URL = getApiOrigin();
+      const token = getAuthToken('passenger');
+      if (!token) {
+        throw new Error('You must be signed in to expand search');
+      }
+      const res = await fetch(`${API_URL}/api/rides/${currentRideId}/expand-search`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.warn('[expand-search] failed', res.status, data);
+        throw new Error(data?.message || `Could not expand search (HTTP ${res.status})`);
+      }
+      setCurrentRidePrefs((prev) =>
+        prev ? { ...prev, genderFilterActive: false } : prev
+      );
+      setShowExpandPrompt(false);
+      setAutoPromoted(false);
+      toast({
+        title: t('expand_search_yes', 'Expanded search'),
+        description: t(
+          'expand_search_confirm_desc',
+          'Searching all available drivers nearby.'
+        )
+      });
+    } catch (e: any) {
+      toast({
+        title: t('error', 'Error'),
+        description: e?.message || 'Could not expand search',
+        variant: 'destructive'
+      });
+    } finally {
+      setExpanding(false);
+    }
+  }, [currentRideId, expanding, t]);
 
   React.useEffect(() => {
     if (step !== 'searching' || !currentRideId) return;
@@ -313,9 +475,23 @@ const PassengerHome = () => {
       }
       waitingSocketRef.current = socket;
 
-      const join = () => socket.emit('join_ride', rideId);
+      const join = () => {
+        socket.emit('join_ride', rideId);
+        const passenger = getUser('passenger');
+        if (passenger?._id) {
+          socket.emit('join_passenger_room', passenger._id);
+        }
+      };
       socket.on('connect', join);
       if (socket.connected) join();
+
+      socket.on('passenger_pickup_otp', (payload: { rideId: string }) => {
+        if (!payload?.rideId || String(payload.rideId) !== String(rideId)) return;
+        toast({
+          title: t('pickup_otp_title'),
+          description: t('pickup_otp_subtitle'),
+        });
+      });
 
       socket.on('ride_updated', (updatedRide: any) => {
         if (!updatedRide || String(updatedRide._id) !== String(rideId)) return;
@@ -737,6 +913,13 @@ const PassengerHome = () => {
           address: destination.name,
           coordinates: dCoords
         },
+        // Multi-stop itinerary. The backend re-runs OSRM with these waypoints and
+        // overrides the distance/duration/fare we send here, so it's safe to keep
+        // our client-side estimates as-is.
+        stops: placedStops.map((s) => ({
+          address: s.name,
+          coordinates: { lat: s.lat, lng: s.lng }
+        })),
         fare: {
           estimated: estFare,
         },
@@ -799,10 +982,18 @@ const PassengerHome = () => {
         });
         setStep('location');
         setDestination(null);
+        setStops([]);
         setIsScheduled(false);
         setScheduledFor(null);
       } else {
         setCurrentRideId(ride._id);
+        // Lady-safety: track gender prefs + start countdown for "expand search" prompt.
+        setCurrentRidePrefs({
+          preferredDriverGender: ride.preferredDriverGender || 'any',
+          genderFilterActive: ride.genderFilterActive !== false
+        });
+        setSearchStartedAt(Date.now());
+        setShowExpandPrompt(false);
         // Start polling for driver acceptance
         startPolling(ride._id);
       }
@@ -847,6 +1038,10 @@ const PassengerHome = () => {
       setStep('location');
       setCurrentRideId(null);
       setDestination(null);
+      setStops([]);
+      setCurrentRidePrefs(null);
+      setSearchStartedAt(null);
+      setShowExpandPrompt(false);
       // Keep source as it might still be relevant
     } catch (error) {
       console.error('Error cancelling ride:', error);
@@ -885,25 +1080,145 @@ const PassengerHome = () => {
         placeName = subName ? `${mainName}, ${subName}` : mainName;
       }
 
-      if (activeField === 'pickup') {
-        setSource({ name: placeName, lat, lng });
-      } else {
-        setDestination({ name: placeName, lat, lng });
-      }
+      applyPickedLocation(placeName, lat, lng);
     } catch (e) {
       console.error('Reverse geocode error', e);
-      const fallbackName = "Selected on Map";
-      if (activeField === 'pickup') {
-        setSource({ name: fallbackName, lat, lng });
-      } else {
-        setDestination({ name: fallbackName, lat, lng });
-      }
+      applyPickedLocation('Selected on Map', lat, lng);
     }
     
     // Reset route stats when locations change
     setRouteStats(null);
     setIsMapOpen(false);
   };
+
+  // Routes the picked location to pickup / dropoff / a specific itinerary stop slot.
+  const applyPickedLocation = (placeName: string, lat: number, lng: number) => {
+    if (typeof activeField === 'string' && activeField.startsWith('stop:')) {
+      const stopId = activeField.slice('stop:'.length);
+      setStops((prev) =>
+        prev.map((s) => (s.id === stopId ? { ...s, name: placeName, lat, lng } : s))
+      );
+      return;
+    }
+    if (activeField === 'pickup') {
+      setSource({ name: placeName, lat, lng });
+    } else {
+      setDestination({ name: placeName, lat, lng });
+    }
+  };
+
+  // Fetch route-safety analysis whenever pickup + drop are both set on the location step.
+  React.useEffect(() => {
+    if (step !== 'location' || !source || !destination) {
+      // Cancel any in-flight analysis if the user changes their mind.
+      if (safetyAbortRef.current) {
+        safetyAbortRef.current.abort();
+        safetyAbortRef.current = null;
+      }
+      setSafetyRoutes([]);
+      setSelectedRouteId(null);
+      setRecommendedRouteId(null);
+      setSafetyError(null);
+      setSafetyLoading(false);
+      return;
+    }
+
+    // Abort any prior request — locations changed.
+    if (safetyAbortRef.current) safetyAbortRef.current.abort();
+    const controller = new AbortController();
+    safetyAbortRef.current = controller;
+
+    setSafetyLoading(true);
+    setSafetyError(null);
+
+    (async () => {
+      try {
+        const res = await fetch(`${API_ORIGIN}/api/safety/analyze`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            source: { lat: source.lat, lng: source.lng, name: source.name },
+            destination: {
+              lat: destination.lat,
+              lng: destination.lng,
+              name: destination.name
+            },
+            departAt: new Date().toISOString()
+          })
+        });
+        if (!res.ok) throw new Error(`Safety API ${res.status}`);
+        const data = await res.json();
+        if (controller.signal.aborted) return;
+        const incomingRoutes: AnalyzedRoute[] = Array.isArray(data?.routes) ? data.routes : [];
+        setSafetyRoutes(incomingRoutes);
+        setRecommendedRouteId(data?.recommendedId ?? null);
+        const nextSelectedId =
+          selectedRouteId && incomingRoutes.some((r) => r.id === selectedRouteId)
+            ? selectedRouteId
+            : data?.recommendedId ?? incomingRoutes[0]?.id ?? null;
+        setSelectedRouteId(nextSelectedId);
+
+        // Seed routeStats from the chosen route so the fare/ETA reflect the safety API result
+        // immediately — we suppress the leaflet-routing-machine default in MapComponent now.
+        const seed = incomingRoutes.find((r) => r.id === nextSelectedId);
+        if (seed) {
+          setRouteStats({
+            distanceKm: seed.distanceKm,
+            distanceStr: `${seed.distanceKm.toFixed(1)} km`,
+            durationStr: `${seed.durationMin} min`
+          });
+        }
+      } catch (err: any) {
+        if (controller.signal.aborted) return;
+        console.warn('Route safety analysis failed:', err?.message || err);
+        setSafetyError(err?.message || 'Safety check failed');
+        setSafetyRoutes([]);
+        setRecommendedRouteId(null);
+        setSelectedRouteId(null);
+      } finally {
+        if (!controller.signal.aborted) setSafetyLoading(false);
+      }
+    })();
+
+    return () => {
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, source?.lat, source?.lng, destination?.lat, destination?.lng]);
+
+  const handleSwitchSaferRoute = React.useCallback(
+    (routeId: string) => {
+      const target = safetyRoutes.find((r) => r.id === routeId);
+      if (!target) return;
+      setSelectedRouteId(routeId);
+      // Sync routeStats so fare estimate reflects the chosen alternative.
+      setRouteStats({
+        distanceKm: target.distanceKm,
+        distanceStr: `${target.distanceKm.toFixed(1)} km`,
+        durationStr: `${target.durationMin} min`
+      });
+      toast({
+        title: t('safer_route_switched_title', 'Switched to safer route'),
+        description: t('safer_route_switched_desc', 'We updated the map and fare for this route.')
+      });
+    },
+    [safetyRoutes, t]
+  );
+
+  const mapSafetyRoutes = React.useMemo(
+    () =>
+      safetyRoutes
+        .filter((r) => Array.isArray(r.geometry) && r.geometry.length > 1)
+        .map((r) => ({
+          id: r.id,
+          geometry: r.geometry,
+          durationMin: r.durationMin,
+          trafficScore: r.analysis?.dimensions?.traffic?.score ?? null,
+          isSelected: r.id === selectedRouteId
+        })),
+    [safetyRoutes, selectedRouteId]
+  );
 
   const handleSearch = async (query: string) => {
     setSearchQuery(query);
@@ -950,18 +1265,99 @@ const PassengerHome = () => {
     const subName = parts[1]?.trim() || parts[2]?.trim() || '';
     const placeName = subName ? `${mainName}, ${subName}` : mainName;
 
-    if (activeField === 'pickup') {
-      setSource({ name: placeName, lat, lng });
-    } else {
-      setDestination({ name: placeName, lat, lng });
-    }
-    
+    applyPickedLocation(placeName, lat, lng);
+
     // Reset route stats when active field changes
     setRouteStats(null);
     setIsMapOpen(false);
     setSearchQuery('');
     setSearchResults([]);
   };
+
+  // --- Multi-stop itinerary helpers ----------------------------------------
+  // We keep these inside the component so they close over setStops + setActiveField.
+  const addEmptyStop = () => {
+    if (stops.length >= MAX_BOOKING_STOPS) {
+      toast({
+        title: t('max_stops_reached', 'Max stops reached'),
+        description: t('max_stops_reached_desc', `You can add up to ${MAX_BOOKING_STOPS} stops.`),
+      });
+      return;
+    }
+    const id = `s_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    setStops((prev) => [...prev, { id, name: '', lat: 0, lng: 0 }]);
+    setActiveField(`stop:${id}`);
+    setSearchQuery('');
+    setSearchResults([]);
+    setIsMapOpen(true);
+  };
+  const removeStop = (id: string) => {
+    setStops((prev) => prev.filter((s) => s.id !== id));
+    setRouteStats(null); // force recompute via the multi-leg OSRM effect
+  };
+  const openStopPicker = (id: string) => {
+    setActiveField(`stop:${id}`);
+    setSearchQuery('');
+    setSearchResults([]);
+    setIsMapOpen(true);
+  };
+  const reorderStops = (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    setStops((prev) => {
+      const fromIdx = prev.findIndex((s) => s.id === fromId);
+      const toIdx = prev.findIndex((s) => s.id === toId);
+      if (fromIdx < 0 || toIdx < 0) return prev;
+      const next = prev.slice();
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
+    setRouteStats(null);
+  };
+  // List of "valid" placed stops (skip the empty placeholder while user is picking).
+  const placedStops = React.useMemo(
+    () =>
+      stops.filter(
+        (s) => Number.isFinite(s.lat) && Number.isFinite(s.lng) && (s.lat !== 0 || s.lng !== 0) && s.name
+      ),
+    [stops]
+  );
+
+  // Recompute total distance / duration / fare across pickup -> stops -> dropoff
+  // whenever the itinerary changes. Uses the public OSRM demo server — same as backend.
+  React.useEffect(() => {
+    if (step !== 'location' || !source || !destination) return;
+    if (placedStops.length === 0) return; // SafetyCard's seed routeStats already covers the simple case.
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const coords = [
+          { lat: source.lat, lng: source.lng },
+          ...placedStops.map((s) => ({ lat: s.lat, lng: s.lng })),
+          { lat: destination.lat, lng: destination.lng }
+        ];
+        const coordStr = coords.map((p) => `${p.lng},${p.lat}`).join(';');
+        const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=false&alternatives=false&steps=false`;
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data?.code !== 'Ok' || !Array.isArray(data.routes) || data.routes.length === 0) return;
+        const r = data.routes[0];
+        const distKm = Math.round((r.distance / 1000) * 100) / 100;
+        const durMin = Math.max(1, Math.round(r.duration / 60));
+        setRouteStats({
+          distanceKm: distKm,
+          distanceStr: `${distKm.toFixed(1)} km`,
+          durationStr: `${durMin} min`
+        });
+      } catch (err: any) {
+        if (controller.signal.aborted) return;
+        console.warn('Itinerary OSRM recompute failed:', err?.message || err);
+      }
+    })();
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, source?.lat, source?.lng, destination?.lat, destination?.lng, placedStops]);
 
   if (loading) {
     return (
@@ -1000,6 +1396,14 @@ const PassengerHome = () => {
               pickupName={source?.name}
               dropoffName={destination?.name}
               userPosition={liveUserPosition}
+              safetyRoutes={placedStops.length === 0 ? mapSafetyRoutes : undefined}
+              onSelectRoute={handleSwitchSaferRoute}
+              stops={placedStops.map((s) => ({
+                address: s.name,
+                coordinates: { lat: s.lat, lng: s.lng },
+                status: 'pending' as const,
+                source: 'booking' as const
+              }))}
               onRouteCalculated={(distStr, timeStr, distKm) => {
                 setRouteStats({ distanceStr: distStr, durationStr: timeStr, distanceKm: distKm });
               }}
@@ -1031,7 +1435,13 @@ const PassengerHome = () => {
             <div className="flex items-center justify-between">
               <div className="bg-background/95 backdrop-blur-md px-4 py-2 rounded-2xl shadow-xl border border-border">
                 <p className="text-sm font-bold text-foreground">
-                  {t(activeField)}
+                  {typeof activeField === 'string' && activeField.startsWith('stop:')
+                    ? (() => {
+                        const sid = activeField.slice('stop:'.length);
+                        const idx = stops.findIndex((s) => s.id === sid);
+                        return t('stop_n', { n: idx >= 0 ? idx + 1 : stops.length, defaultValue: `Stop ${idx >= 0 ? idx + 1 : stops.length}` });
+                      })()
+                    : t(activeField)}
                 </p>
               </div>
               <Button
@@ -1039,6 +1449,14 @@ const PassengerHome = () => {
                 size="sm"
                 className="rounded-full px-6 shadow-[0_4px_15px_rgba(239,68,68,0.4)] h-10 font-bold"
                 onClick={() => {
+                  // If we're picking a brand-new (empty) stop and the user cancels,
+                  // remove the placeholder so the row doesn't dangle empty.
+                  if (typeof activeField === 'string' && activeField.startsWith('stop:')) {
+                    const sid = activeField.slice('stop:'.length);
+                    setStops((prev) =>
+                      prev.filter((s) => !(s.id === sid && (!s.name || (s.lat === 0 && s.lng === 0))))
+                    );
+                  }
                   setIsMapOpen(false);
                   setSearchQuery('');
                   setSearchResults([]);
@@ -1145,6 +1563,93 @@ const PassengerHome = () => {
                 />
               </div>
 
+              {/* Multi-stop itinerary: numbered, reorderable rows + Add stop button.
+                  Glassmorphism on a brand-primary tint per the design system. */}
+              <div className="space-y-2">
+                {stops.length > 0 && (
+                  <div className="space-y-2">
+                    {stops.map((stop, idx) => {
+                      const isPlaced = !!stop.name && (stop.lat !== 0 || stop.lng !== 0);
+                      return (
+                        <div
+                          key={stop.id}
+                          draggable={isPlaced}
+                          onDragStart={(e) => {
+                            setDraggingStopId(stop.id);
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (draggingStopId) reorderStops(draggingStopId, stop.id);
+                            setDraggingStopId(null);
+                          }}
+                          onDragEnd={() => setDraggingStopId(null)}
+                          className={`group flex items-center gap-2 rounded-2xl border border-primary/20 bg-primary/5 backdrop-blur-md px-3 py-2.5 transition-colors ${
+                            draggingStopId === stop.id ? 'opacity-50' : 'hover:bg-primary/10'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            className="flex-shrink-0 cursor-grab active:cursor-grabbing touch-none text-muted-foreground hover:text-foreground"
+                            aria-label={t('reorder_stops_hint', 'Drag to reorder')}
+                          >
+                            <GripVertical className="w-4 h-4" />
+                          </button>
+                          <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary text-primary-foreground font-black text-xs flex items-center justify-center">
+                            {idx + 1}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => openStopPicker(stop.id)}
+                            className="flex-1 min-w-0 text-left"
+                          >
+                            {isPlaced ? (
+                              <p className="text-sm font-semibold text-foreground truncate">
+                                {stop.name}
+                              </p>
+                            ) : (
+                              <p className="text-sm text-muted-foreground italic truncate">
+                                {t('select_stop_location', 'Select stop location')}
+                              </p>
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeStop(stop.id)}
+                            aria-label={t('remove_stop', 'Remove stop')}
+                            className="flex-shrink-0 w-7 h-7 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center transition-colors"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={addEmptyStop}
+                  disabled={stops.length >= MAX_BOOKING_STOPS}
+                  className="w-full flex items-center justify-center gap-2 rounded-2xl border border-primary/25 bg-primary/5 backdrop-blur-md px-4 py-3 text-sm font-semibold text-foreground hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Plus className="w-4 h-4 text-primary" />
+                  <span>
+                    {stops.length === 0
+                      ? t('add_stop', 'Add stop')
+                      : t('add_another_stop', 'Add another stop')}
+                  </span>
+                  {stops.length > 0 && (
+                    <span className="text-xs text-muted-foreground ml-1">
+                      {stops.length}/{MAX_BOOKING_STOPS}
+                    </span>
+                  )}
+                </button>
+              </div>
+
               {/* Quick destinations */}
               <div className="space-y-2">
                 <p className="text-sm font-medium text-muted-foreground">{t('recent_places')}</p>
@@ -1194,6 +1699,20 @@ const PassengerHome = () => {
                     <p className="text-sm font-bold text-foreground">{routeStats.durationStr}</p>
                     <p className="text-xs text-muted-foreground">{routeStats.distanceStr}</p>
                   </div>
+                </div>
+              )}
+
+              {/* Route safety (Gemini-scored alternatives) */}
+              {source && destination && (safetyLoading || safetyRoutes.length > 0 || safetyError) && (
+                <div className="animate-in fade-in slide-in-from-bottom-2">
+                  <SafetyCard
+                    loading={safetyLoading}
+                    error={safetyError}
+                    routes={safetyRoutes}
+                    selectedRouteId={selectedRouteId}
+                    recommendedId={recommendedRouteId}
+                    onSwitchRoute={handleSwitchSaferRoute}
+                  />
                 </div>
               )}
 
@@ -1323,7 +1842,13 @@ const PassengerHome = () => {
                 <AutoRickshaw className="text-primary" size={48} />
               </div>
               <div>
-                <p className="text-xl font-bold text-foreground">{t('finding_your_auto')}</p>
+                <p className="text-xl font-bold text-foreground">
+                  {currentRidePrefs?.genderFilterActive && currentRidePrefs.preferredDriverGender === 'female'
+                    ? t('searching_female_driver', 'Searching for a female driver')
+                    : currentRidePrefs?.genderFilterActive && currentRidePrefs.preferredDriverGender === 'male'
+                      ? t('searching_male_driver', 'Searching for a male driver')
+                      : t('finding_your_auto')}
+                </p>
                 <p className="text-muted-foreground mt-1">{t('waiting_driver_accept')}</p>
               </div>
 
@@ -1339,6 +1864,59 @@ const PassengerHome = () => {
                     {waitingFareMeta.durationStr}
                   </p>
                 </div>
+              )}
+
+              {showExpandPrompt && currentRidePrefs?.genderFilterActive && (
+                autoPromoted ? (
+                  // After 30s: prominent banner — the "expand search" action is now front-and-center.
+                  <div className="rounded-2xl border border-primary/30 bg-primary/10 backdrop-blur-xl px-5 py-4 text-left shadow-sm animate-in fade-in slide-in-from-bottom-2">
+                    <p className="text-sm font-bold text-foreground">
+                      {t('expand_search_title', 'Still searching')}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                      {t(
+                        'expand_search_desc',
+                        'No matching driver online right now. Expand search to any nearby driver?'
+                      )}
+                    </p>
+                    <div className="grid grid-cols-2 gap-2 mt-3">
+                      <Button
+                        variant="touch"
+                        className="rounded-xl h-11 text-sm"
+                        disabled={expanding}
+                        onClick={handleExpandSearch}
+                      >
+                        {expanding ? t('please_wait') : t('expand_search_yes', 'Expand search')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="rounded-xl h-11 text-sm border-border/60 bg-background/40 backdrop-blur-md"
+                        onClick={() => setShowExpandPrompt(false)}
+                      >
+                        {t('expand_search_no', 'Keep waiting')}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  // Immediate compact pill — always visible so users can manually broaden any time.
+                  <button
+                    type="button"
+                    disabled={expanding}
+                    onClick={handleExpandSearch}
+                    className="w-full rounded-2xl border border-primary/20 bg-primary/5 backdrop-blur-md px-4 py-3 text-left transition-colors hover:bg-primary/10 disabled:opacity-60"
+                  >
+                    <p className="text-xs font-semibold text-foreground">
+                      {currentRidePrefs.preferredDriverGender === 'female'
+                        ? t('searching_female_driver', 'Searching for a female driver')
+                        : t('searching_male_driver', 'Searching for a male driver')}
+                    </p>
+                    <p className="text-xs text-primary font-semibold mt-1">
+                      {expanding
+                        ? t('please_wait')
+                        : t('expand_search_yes', 'Expand search')}
+                    </p>
+                  </button>
+                )
               )}
 
               <div className="pt-4">

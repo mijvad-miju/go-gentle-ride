@@ -1,21 +1,57 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
+import { MapPin, CheckCircle2 } from 'lucide-react';
 import Header from '@/components/common/Header';
 import EarningsCard from '@/components/driver/EarningsCard';
 import RideRequest from '@/components/driver/RideRequest';
 import MapComponent from '@/components/MapComponent';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription
+} from '@/components/ui/sheet';
 import { toast } from '@/hooks/use-toast';
 import { io } from 'socket.io-client';
 import { getAuthToken, getUser } from '@/lib/auth';
 import { getApiOrigin } from '@/lib/apiOrigin';
 
+function haversineMeters(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const x =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+
 const DriverDashboard: React.FC = () => {
+  const { t } = useTranslation();
   const [currentRide, setCurrentRide] = useState<any>(null);
   const [activeRide, setActiveRide] = useState<any>(null);
   const [scheduledRides, setScheduledRides] = useState<any[]>([]);
   const [acceptedScheduledRides, setAcceptedScheduledRides] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'immediate' | 'scheduled'>('immediate');
   const [currentLocation, setCurrentLocation] = useState<[number, number] | null>(null);
+  const [pickupOtpInput, setPickupOtpInput] = useState('');
+
+  // Multi-stop itinerary state for the in-progress trip.
+  // - `stopRequest`: pending mid-trip add-stop awaiting accept/decline.
+  // - Live `now` tick drives the 30s auto-decline ring.
+  const [stopRequest, setStopRequest] = useState<any>(null);
+  const [stopActionLoading, setStopActionLoading] = useState<null | 'accept' | 'reject'>(null);
+  const [stopVisitLoading, setStopVisitLoading] = useState<number | null>(null);
+  const [nowTs, setNowTs] = useState<number>(Date.now());
+  useEffect(() => {
+    if (!stopRequest?.expiresAt) return;
+    const id = setInterval(() => setNowTs(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [stopRequest?.expiresAt]);
 
   const currentRideRef = useRef<typeof currentRide>(null);
   const activeRideRef = useRef<typeof activeRide>(null);
@@ -38,6 +74,31 @@ const DriverDashboard: React.FC = () => {
   const rideIdsMatch = (a: unknown, b: unknown) =>
     String(a) === String(b);
 
+  /**
+   * Lady-safety: bidirectional compatibility predicate, mirroring backend rides.js.
+   * Driver's `preferredPassengerGender` is always enforced; passenger's preference
+   * only enforced when `genderFilterActive !== false`.
+   */
+  const isRideCompatibleForCurrentDriver = (ride: any): boolean => {
+    const driver = getUser('driver');
+    if (!driver) return true; // not logged in — back-end will guard.
+
+    const dPref = (driver as any).preferredPassengerGender || 'any';
+    const driverOk =
+      dPref === 'any' ||
+      !ride?.passengerGender ||
+      dPref === ride.passengerGender;
+
+    const passengerOk =
+      ride?.genderFilterActive === false ||
+      !ride?.preferredDriverGender ||
+      ride.preferredDriverGender === 'any' ||
+      !(driver as any).gender ||
+      ride.preferredDriverGender === (driver as any).gender;
+
+    return driverOk && passengerOk;
+  };
+
   const isDriverAssignedToRide = (ride: { driverId?: unknown }, userId: string | undefined) => {
     if (!userId) return false;
     const d = ride?.driverId as { _id?: unknown } | string | null | undefined;
@@ -56,9 +117,19 @@ const DriverDashboard: React.FC = () => {
     socket.on('connect', () => {
       console.log('Connected to socket server');
       socket.emit('join_driver_room');
+      // Join the personal tracking room so the server can target stop_request
+      // (and other one-to-one events) at this specific driver.
+      const driver = getUser('driver');
+      if (driver?._id) socket.emit('join_driver_tracking', driver._id);
     });
 
     socket.on('new_ride', (ride) => {
+      if (!isRideCompatibleForCurrentDriver(ride)) {
+        // Defence in depth: hide rides that don't match this driver's gender preference
+        // (or whose passenger required a different driver gender). Server is the source
+        // of truth via REST `/pending/available?driverId=...`.
+        return;
+      }
       if (!currentRideRef.current && !activeRideRef.current) {
         console.log('Received new_ride via socket:', ride);
         setCurrentRide(ride);
@@ -71,6 +142,7 @@ const DriverDashboard: React.FC = () => {
     });
 
     socket.on('new_scheduled_ride', (ride) => {
+      if (!isRideCompatibleForCurrentDriver(ride)) return;
       setScheduledRides((prev) => {
         const id = ride?._id;
         if (!id || prev.some((r) => rideIdsMatch(r._id, id))) return prev;
@@ -127,6 +199,60 @@ const DriverDashboard: React.FC = () => {
       setScheduledRides((prev) => prev.filter((r) => !rideIdsMatch(r._id, rid)));
     });
 
+    // Multi-stop itinerary: passenger asked to add a stop mid-trip.
+    socket.on('stop_request', (payload: any) => {
+      if (!payload?.rideId) return;
+      const active = activeRideRef.current;
+      if (!active || !rideIdsMatch(active._id, payload.rideId)) return;
+      setStopRequest(payload.pendingStopRequest || null);
+      playDriverPing();
+    });
+    // Server-confirmed stop addition (e.g. accept from this device, or sync from server).
+    socket.on('stop_added', (payload: any) => {
+      if (!payload?.rideId) return;
+      const active = activeRideRef.current;
+      if (!active || !rideIdsMatch(active._id, payload.rideId)) return;
+      if (payload.ride) setActiveRide((prev: any) => ({ ...prev, ...payload.ride }));
+      setStopRequest(null);
+    });
+    socket.on('stop_rejected', (payload: any) => {
+      if (!payload?.rideId) return;
+      const active = activeRideRef.current;
+      if (!active || !rideIdsMatch(active._id, payload.rideId)) return;
+      setStopRequest(null);
+    });
+    // Keep the active ride object fresh whenever the server emits ride_updated.
+    socket.on('ride_updated', (updated: any) => {
+      if (!updated?._id) return;
+      const active = activeRideRef.current;
+      if (active && rideIdsMatch(active._id, updated._id)) {
+        setActiveRide((prev: any) => ({ ...prev, ...updated }));
+      }
+    });
+
+    socket.on('ride_cancelled', (data: { rideId?: unknown }) => {
+      const rid = data?.rideId;
+      if (rid == null) return;
+
+      const clearedActive =
+        activeRideRef.current != null && rideIdsMatch(activeRideRef.current._id, rid);
+      const clearedCurrent =
+        currentRideRef.current != null && rideIdsMatch(currentRideRef.current._id, rid);
+
+      if (clearedActive) setActiveRide(null);
+      if (clearedCurrent) setCurrentRide(null);
+
+      setScheduledRides((prev) => prev.filter((r) => !rideIdsMatch(r._id, rid)));
+      setAcceptedScheduledRides((prev) => prev.filter((r) => !rideIdsMatch(r._id, rid)));
+
+      if (clearedActive || clearedCurrent) {
+        toast({
+          title: 'Ride cancelled',
+          description: 'The passenger cancelled this ride.',
+        });
+      }
+    });
+
     return () => {
       socket.disconnect();
     };
@@ -135,7 +261,9 @@ const DriverDashboard: React.FC = () => {
   const fetchScheduledRides = async () => {
     try {
       const API_URL = getApiOrigin();
-      const response = await fetch(`${API_URL}/api/rides/scheduled/available`);
+      const driver = getUser('driver');
+      const qs = driver?._id ? `?driverId=${encodeURIComponent(driver._id)}` : '';
+      const response = await fetch(`${API_URL}/api/rides/scheduled/available${qs}`);
       const rides = await response.json();
       setScheduledRides(rides);
     } catch (error) {
@@ -224,7 +352,9 @@ const DriverDashboard: React.FC = () => {
       const fetchPendingRides = async () => {
         try {
           const API_URL = getApiOrigin();
-          const response = await fetch(`${API_URL}/api/rides/pending/available`);
+          const driver = getUser('driver');
+          const qs = driver?._id ? `?driverId=${encodeURIComponent(driver._id)}` : '';
+          const response = await fetch(`${API_URL}/api/rides/pending/available${qs}`);
           const rides = await response.json();
 
           if (rides.length > 0 && !currentRideRef.current && !activeRideRef.current) {
@@ -243,6 +373,51 @@ const DriverDashboard: React.FC = () => {
       if (interval) clearInterval(interval);
     };
   }, [currentRide, activeRide]);
+
+  useEffect(() => {
+    if (!activeRide?._id) setPickupOtpInput('');
+  }, [activeRide?._id]);
+
+  // Join the active ride's socket room so we get ride_updated / stop_added events.
+  const ridesSocketRef = useRef<any>(null);
+  useEffect(() => {
+    if (!activeRide?._id) return;
+    const API_URL = getApiOrigin();
+    const sock = ridesSocketRef.current ?? (API_URL === '' ? io() : io(API_URL));
+    ridesSocketRef.current = sock;
+    sock.on('connect', () => {
+      sock.emit('join_ride', activeRide._id);
+    });
+    if (sock.connected) sock.emit('join_ride', activeRide._id);
+    sock.on('ride_updated', (updated: any) => {
+      if (updated?._id && rideIdsMatch(updated._id, activeRide._id)) {
+        setActiveRide((prev: any) => ({ ...prev, ...updated }));
+      }
+    });
+    sock.on('stop_added', (payload: any) => {
+      if (payload?.ride?._id && rideIdsMatch(payload.ride._id, activeRide._id)) {
+        setActiveRide((prev: any) => ({ ...prev, ...payload.ride }));
+        setStopRequest(null);
+      }
+    });
+    return () => {
+      try {
+        sock.off('ride_updated');
+        sock.off('stop_added');
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [activeRide?._id]);
+  useEffect(() => {
+    return () => {
+      try {
+        ridesSocketRef.current?.disconnect();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, []);
 
   // Real-time location tracking
   useEffect(() => {
@@ -274,22 +449,52 @@ const DriverDashboard: React.FC = () => {
     };
 
     if (navigator.geolocation) {
-      // Fetch location immediately once for instant UI update
+      // Stage 1 — cached fix (up to 5 min) so the map shows roughly the right
+      // area immediately while stage 2 upgrades to a fresh high-accuracy fix.
       navigator.geolocation.getCurrentPosition(
         (position) => {
+          console.log('[geo:driver] cached fix', {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            accuracyM: position.coords.accuracy
+          });
           updateLocation(position.coords.latitude, position.coords.longitude);
         },
-        (error) => console.error('Immediate geolocation error:', error),
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        () => {
+          // ignore — stage 2 will retry
+        },
+        { enableHighAccuracy: false, timeout: 4000, maximumAge: 5 * 60 * 1000 }
       );
 
-      // Then bind watcher for continuous updates
+      // Stage 2 — fresh high-accuracy fix. 5-second timeout was way too short
+      // for a high-accuracy fix; bump to 20s to avoid bouncing back to a
+      // stale/wrong location.
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          console.log('[geo:driver] currentPosition', {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            accuracyM: position.coords.accuracy
+          });
+          updateLocation(position.coords.latitude, position.coords.longitude);
+        },
+        (error) => {
+          console.error('Immediate geolocation error:', error);
+          // Don't fall back to a hardcoded city — a wrong location will mislead
+          // the passenger's tracking screen. Stage 1 cached fix (if any) is the
+          // best we have until the watcher succeeds.
+        },
+        { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+      );
+
+      // Continuous watcher. 5s timeout caused fixes to be dropped on weak GPS,
+      // which froze the driver pin on the cached/default location.
       watchId = navigator.geolocation.watchPosition(
         (position) => {
           updateLocation(position.coords.latitude, position.coords.longitude);
         },
         (error) => console.error('Geolocation watch error:', error),
-        { enableHighAccuracy: true, maximumAge: 5000, timeout: 5000 }
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
       );
     }
 
@@ -361,6 +566,179 @@ const DriverDashboard: React.FC = () => {
     });
   };
 
+  // --- Multi-stop itinerary handlers ----------------------------------------
+  const handleAcceptStop = async () => {
+    if (!activeRide?._id) return;
+    setStopActionLoading('accept');
+    try {
+      const API_URL = getApiOrigin();
+      const res = await fetch(`${API_URL}/api/rides/${activeRide._id}/accept-stop`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${getAuthToken('driver')}` }
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        throw new Error(detail?.message || 'Failed to accept stop');
+      }
+      const data = await res.json();
+      if (data?.ride) setActiveRide((prev: any) => ({ ...prev, ...data.ride }));
+      setStopRequest(null);
+      toast({ title: t('accept_stop', 'Accept stop'), description: t('stop_added_desc', 'Stop added to your route.') });
+    } catch (e: any) {
+      toast({ title: t('error', 'Error'), description: e?.message || 'Could not accept', variant: 'destructive' });
+    } finally {
+      setStopActionLoading(null);
+    }
+  };
+
+  const handleRejectStop = async (silent = false) => {
+    if (!activeRide?._id) return;
+    setStopActionLoading('reject');
+    try {
+      const API_URL = getApiOrigin();
+      await fetch(`${API_URL}/api/rides/${activeRide._id}/reject-stop`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${getAuthToken('driver')}` }
+      });
+      setStopRequest(null);
+      if (!silent) {
+        toast({ title: t('decline_stop', 'Decline stop'), description: t('stop_rejected_desc', 'You declined the stop.') });
+      }
+    } catch (e) {
+      console.warn('Reject stop failed:', e);
+    } finally {
+      setStopActionLoading(null);
+    }
+  };
+
+  // Auto-reject the pending stop when the 30s countdown reaches 0.
+  useEffect(() => {
+    if (!stopRequest?.expiresAt) return;
+    const ms = new Date(stopRequest.expiresAt).getTime() - Date.now();
+    if (ms <= 0) {
+      void handleRejectStop(true);
+      return;
+    }
+    const id = setTimeout(() => void handleRejectStop(true), ms);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopRequest?.expiresAt]);
+
+  const handleMarkStopVisited = async (index: number) => {
+    if (!activeRide?._id) return;
+    setStopVisitLoading(index);
+    try {
+      const API_URL = getApiOrigin();
+      const res = await fetch(`${API_URL}/api/rides/${activeRide._id}/stops/${index}/visit`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getAuthToken('driver')}`
+        },
+        body: JSON.stringify({
+          location: currentLocation
+            ? { lat: currentLocation[0], lng: currentLocation[1] }
+            : null
+        })
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        // "not at stop yet" — let the driver force from the UI confirmation toast.
+        if (res.status === 400 && detail?.message?.includes('not at this stop')) {
+          const ok = window.confirm(t('confirm_force_visit', 'You are not within 80m of this stop. Mark visited anyway?'));
+          if (!ok) return;
+          const force = await fetch(
+            `${API_URL}/api/rides/${activeRide._id}/stops/${index}/visit?force=1`,
+            {
+              method: 'PATCH',
+              headers: { Authorization: `Bearer ${getAuthToken('driver')}` }
+            }
+          );
+          if (!force.ok) throw new Error('Could not mark visited');
+          const fd = await force.json();
+          if (fd?.ride) setActiveRide((prev: any) => ({ ...prev, ...fd.ride }));
+          return;
+        }
+        throw new Error(detail?.message || 'Could not mark visited');
+      }
+      const data = await res.json();
+      if (data?.ride) setActiveRide((prev: any) => ({ ...prev, ...data.ride }));
+    } catch (e: any) {
+      toast({ title: t('error', 'Error'), description: e?.message || 'Could not mark visited', variant: 'destructive' });
+    } finally {
+      setStopVisitLoading(null);
+    }
+  };
+
+  const handleStartRide = async () => {
+    if (!activeRide) return;
+
+    if (activeRide.isScheduled && activeRide.scheduledFor) {
+      const scheduledAt = new Date(activeRide.scheduledFor).getTime();
+      if (Date.now() < scheduledAt) {
+        toast({
+          title: "Too early to start",
+          description: `Pickup is scheduled for ${new Date(activeRide.scheduledFor).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`,
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    if (!['accepted', 'arriving'].includes(activeRide.status)) {
+      toast({
+        title: "Cannot start",
+        description: "This ride is not ready to start.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (pickupOtpInput.trim().length !== 4) {
+      toast({
+        title: "OTP required",
+        description: "Ask the passenger for the 4-digit code from their app.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const API_URL = getApiOrigin();
+      const user = getUser('driver');
+      if (!user?._id) return;
+
+      const response = await fetch(`${API_URL}/api/rides/${activeRide._id}/start`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getAuthToken('driver')}`,
+        },
+        body: JSON.stringify({ driverId: user._id, otp: pickupOtpInput.trim() }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || 'Failed to start ride');
+      }
+
+      const updatedRide = await response.json();
+      setActiveRide(updatedRide);
+      setPickupOtpInput('');
+      toast({
+        title: "Trip started",
+        description: "Head to the drop-off. End the ride when you arrive.",
+      });
+    } catch (error: unknown) {
+      console.error('Error starting ride:', error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Could not start ride.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleCompleteRide = async () => {
     if (!activeRide) return;
 
@@ -374,6 +752,15 @@ const DriverDashboard: React.FC = () => {
         });
         return;
       }
+    }
+
+    if (activeRide.status !== 'in_progress') {
+      toast({
+        title: "Start the trip first",
+        description: "Tap “Start ride” after the passenger has boarded.",
+        variant: "destructive",
+      });
+      return;
     }
 
     try {
@@ -480,6 +867,16 @@ const DriverDashboard: React.FC = () => {
             pickupPosition={activeRide ? [activeRide.pickupLocation.coordinates.lat, activeRide.pickupLocation.coordinates.lng] : null}
             dropoffPosition={activeRide ? [activeRide.dropoffLocation.coordinates.lat, activeRide.dropoffLocation.coordinates.lng] : null}
             userPosition={currentLocation}
+            stops={
+              Array.isArray(activeRide?.stops)
+                ? activeRide.stops.map((s: any) => ({
+                    address: s.address,
+                    coordinates: { lat: s.coordinates?.lat, lng: s.coordinates?.lng },
+                    status: s.status,
+                    source: s.source
+                  }))
+                : undefined
+            }
           />
         </div>
       </div>
@@ -522,6 +919,76 @@ const DriverDashboard: React.FC = () => {
                   <p className="text-sm font-semibold">{activeRide.pickupLocation.address}</p>
                 </div>
               </div>
+
+              {/* Itinerary stops list. The next pending stop gets a "Mark visited"
+                  glass button; geofence enforced by the backend (~80m). */}
+              {Array.isArray(activeRide.stops) && activeRide.stops.length > 0 && (
+                <div className="space-y-2">
+                  {activeRide.stops.map((s: any, idx: number) => {
+                    const visited = s.status === 'visited';
+                    const firstPending =
+                      !visited &&
+                      activeRide.stops.findIndex((x: any) => x.status !== 'visited') === idx;
+                    const nearby =
+                      firstPending && currentLocation && s.coordinates
+                        ? haversineMeters(
+                            { lat: currentLocation[0], lng: currentLocation[1] },
+                            { lat: s.coordinates.lat, lng: s.coordinates.lng }
+                          ) <= 80
+                        : false;
+                    return (
+                      <div
+                        key={`drv-stop-${idx}`}
+                        className={`flex items-center gap-3 rounded-2xl border px-3 py-2.5 backdrop-blur-md ${
+                          visited
+                            ? 'border-primary/15 bg-primary/5'
+                            : firstPending
+                            ? 'border-primary/30 bg-primary/10'
+                            : 'border-primary/20 bg-primary/5'
+                        }`}
+                      >
+                        <div
+                          className={`flex-shrink-0 w-7 h-7 rounded-full font-black text-xs flex items-center justify-center ${
+                            visited
+                              ? 'bg-primary/30 text-primary-foreground/70 line-through'
+                              : 'bg-primary text-primary-foreground'
+                          }`}
+                        >
+                          {idx + 1}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          {firstPending && (
+                            <p className="text-[10px] uppercase tracking-wider font-bold text-primary">
+                              {t('next_stop', 'Next stop')}
+                            </p>
+                          )}
+                          <p
+                            className={`text-sm font-semibold truncate ${
+                              visited ? 'text-muted-foreground line-through' : 'text-foreground'
+                            }`}
+                          >
+                            {s.address}
+                          </p>
+                        </div>
+                        {firstPending && (
+                          <Button
+                            variant="touch"
+                            size="sm"
+                            className="h-9 px-3 text-xs font-bold flex-shrink-0"
+                            disabled={stopVisitLoading === idx || !nearby}
+                            onClick={() => handleMarkStopVisited(idx)}
+                            title={!nearby ? t('move_closer_hint', 'Move within 80m of the stop') : undefined}
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>{t('mark_visited', 'Mark visited')}</span>
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="flex items-start gap-3">
                 <div className="w-2 h-2 mt-2 bg-secondary rounded-full" />
                 <div>
@@ -530,12 +997,62 @@ const DriverDashboard: React.FC = () => {
                 </div>
               </div>
             </div>
+            {(() => {
+              const pickupWindowOk =
+                !activeRide.isScheduled ||
+                (activeRide.scheduledFor &&
+                  Date.now() >= new Date(activeRide.scheduledFor).getTime());
+              const showStart =
+                pickupWindowOk && ['accepted', 'arriving'].includes(activeRide.status);
+              if (!showStart) return null;
+              return (
+                <div className="space-y-2 mb-4">
+                  <label htmlFor="pickup-otp" className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                    Passenger OTP
+                  </label>
+                  <Input
+                    id="pickup-otp"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={4}
+                    placeholder="••••"
+                    value={pickupOtpInput}
+                    onChange={(e) => setPickupOtpInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                    className="h-12 text-center text-xl font-mono tracking-[0.4em] bg-background/80 border-primary/20"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Ask the rider for the code in their app (we also send it by SMS).
+                  </p>
+                </div>
+              );
+            })()}
             <div className="space-y-3">
-              {(!activeRide.isScheduled || (activeRide.scheduledFor && Date.now() >= new Date(activeRide.scheduledFor).getTime())) && (
-                <Button onClick={handleCompleteRide} className="w-full h-14 text-lg font-bold">
-                  Complete Ride
-                </Button>
-              )}
+              {(() => {
+                const pickupWindowOk =
+                  !activeRide.isScheduled ||
+                  (activeRide.scheduledFor &&
+                    Date.now() >= new Date(activeRide.scheduledFor).getTime());
+                const showStart =
+                  pickupWindowOk && ['accepted', 'arriving'].includes(activeRide.status);
+                const showComplete = pickupWindowOk && activeRide.status === 'in_progress';
+                return (
+                  <>
+                    {showStart && (
+                      <Button
+                        onClick={handleStartRide}
+                        className="w-full h-14 text-lg font-bold bg-primary text-primary-foreground shadow-md"
+                      >
+                        Start ride
+                      </Button>
+                    )}
+                    {showComplete && (
+                      <Button onClick={handleCompleteRide} className="w-full h-14 text-lg font-bold">
+                        Complete ride
+                      </Button>
+                    )}
+                  </>
+                );
+              })()}
               <Button
                 onClick={handleCancelActiveRide}
                 variant="outline"
@@ -651,6 +1168,136 @@ const DriverDashboard: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Mid-trip add-stop incoming request. Non-dismissible (no outside-click close)
+          with a 30s auto-decline ring. */}
+      <Sheet
+        open={!!stopRequest?.coordinates?.lat && !!activeRide}
+        onOpenChange={(open) => {
+          if (!open) {
+            // User tried to dismiss — that's a decline.
+            void handleRejectStop(false);
+          }
+        }}
+      >
+        <SheetContent
+          side="bottom"
+          className="rounded-t-3xl border-t border-primary/25 bg-background/95 backdrop-blur-xl max-h-[80vh] overflow-y-auto"
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+        >
+          <SheetHeader>
+            <SheetTitle>{t('driver_stop_request_title', 'Passenger wants to add a stop')}</SheetTitle>
+            <SheetDescription>
+              {t('driver_stop_request_desc', 'Accept to update your route and fare.')}
+            </SheetDescription>
+          </SheetHeader>
+
+          {stopRequest && (
+            <div className="mt-4 space-y-4">
+              <div className="rounded-2xl border border-primary/25 bg-primary/5 backdrop-blur-md p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <MapPin className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
+                  <p className="text-sm font-bold text-foreground">{stopRequest.address}</p>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="rounded-xl border border-primary/15 bg-background/40 backdrop-blur p-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {t('distance_delta', '+Distance')}
+                    </p>
+                    <p className="text-sm font-black text-foreground">
+                      +{Number(stopRequest.distanceDeltaKm || 0).toFixed(1)} km
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-primary/15 bg-background/40 backdrop-blur p-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {t('duration_delta', '+Time')}
+                    </p>
+                    <p className="text-sm font-black text-foreground">
+                      +{stopRequest.durationDeltaMin || 0} min
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-primary/15 bg-background/40 backdrop-blur p-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {t('fare_delta', '+Fare')}
+                    </p>
+                    <p className="text-sm font-black text-foreground">
+                      +₹{stopRequest.fareDelta || 0}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Countdown ring + accept/decline buttons. Auto-rejects on 0. */}
+              {(() => {
+                const expiresMs = stopRequest.expiresAt
+                  ? new Date(stopRequest.expiresAt).getTime()
+                  : 0;
+                const requestedMs = stopRequest.requestedAt
+                  ? new Date(stopRequest.requestedAt).getTime()
+                  : 0;
+                const remaining = Math.max(0, expiresMs - nowTs);
+                const ttlMs = Math.max(1, expiresMs - requestedMs);
+                const frac = Math.min(1, 1 - remaining / ttlMs);
+                const dash = Math.max(0, (1 - frac) * 138.23);
+                const seconds = Math.ceil(remaining / 1000);
+                return (
+                  <div className="flex items-center gap-3">
+                    <div className="relative w-14 h-14 flex-shrink-0">
+                      <svg viewBox="0 0 50 50" className="w-14 h-14 -rotate-90">
+                        <circle
+                          cx="25"
+                          cy="25"
+                          r="22"
+                          fill="none"
+                          stroke="hsl(0, 70%, 50%)"
+                          strokeOpacity="0.25"
+                          strokeWidth="4"
+                        />
+                        <circle
+                          cx="25"
+                          cy="25"
+                          r="22"
+                          fill="none"
+                          stroke="hsl(0, 70%, 50%)"
+                          strokeWidth="4"
+                          strokeLinecap="round"
+                          strokeDasharray={`${dash} 138.23`}
+                        />
+                      </svg>
+                      <span className="absolute inset-0 flex items-center justify-center text-sm font-black text-destructive">
+                        {seconds}
+                      </span>
+                    </div>
+                    <p className="flex-1 text-xs text-muted-foreground">
+                      {t('auto_decline_in', { seconds, defaultValue: `Auto-decline in ${seconds}s` })}
+                    </p>
+                  </div>
+                );
+              })()}
+
+              <div className="grid grid-cols-2 gap-3">
+                <Button
+                  variant="outline"
+                  className="h-12 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive font-bold"
+                  disabled={stopActionLoading !== null}
+                  onClick={() => handleRejectStop()}
+                >
+                  {t('decline_stop', 'Decline')}
+                </Button>
+                <Button
+                  variant="touch"
+                  className="h-12 font-bold"
+                  disabled={stopActionLoading !== null}
+                  onClick={handleAcceptStop}
+                >
+                  {t('accept_stop', 'Accept')}
+                </Button>
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 };

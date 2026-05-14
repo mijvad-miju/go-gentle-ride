@@ -7,6 +7,8 @@ import { getAuthToken, getUser } from '@/lib/auth';
 import { getApiOrigin } from '@/lib/apiOrigin';
 import { io } from 'socket.io-client';
 
+const rideIdsMatch = (a: unknown, b: unknown) => String(a) === String(b);
+
 const isDriverAssignedToRide = (ride: { driverId?: unknown }, userId: string | undefined) => {
   if (!userId) return false;
   const d = ride?.driverId as { _id?: unknown } | string | null | undefined;
@@ -82,6 +84,13 @@ const DriverPrebooks: React.FC = () => {
     });
     socket.on('scheduled_ride_accepted', () => fetchRides({ quiet: true }));
     socket.on('scheduled_ride_due', () => fetchRides({ quiet: true }));
+    socket.on('ride_cancelled', (data: { rideId?: unknown }) => {
+      const rid = data?.rideId;
+      if (rid == null) return;
+      setAvailableRides((prev) => prev.filter((r) => !rideIdsMatch(r._id, rid)));
+      setAcceptedRides((prev) => prev.filter((r) => !rideIdsMatch(r._id, rid)));
+      void fetchRides({ quiet: true });
+    });
 
     return () => {
       clearInterval(poll);

@@ -1,4 +1,6 @@
 import Ride from '../models/Ride.js';
+import { sanitizeRideDoc } from '../utils/ridePayload.js';
+import { assignPickupOtpAndNotify } from './pickupOtp.js';
 
 /**
  * Starts a background worker to periodically check for scheduled rides
@@ -29,7 +31,7 @@ export const startScheduler = (io) => {
         ride.status = 'pending';
         ride.expiresAt = new Date(now.getTime() + 5 * 60 * 1000);
         await ride.save();
-        io.to('drivers').emit('new_ride', ride);
+        io.to('drivers').emit('new_ride', sanitizeRideDoc(ride));
         console.log(`Scheduled ride ${ride._id} is due with no driver — broadcast as pending`);
       }
 
@@ -68,9 +70,34 @@ export const startScheduler = (io) => {
       for (const ride of dueAssigned) {
         ride.status = 'accepted';
         await ride.save();
-        const payload = ride.toObject ? ride.toObject() : ride;
-        io.to('drivers').emit('scheduled_ride_due', payload);
-        console.log(`Scheduled ride ${ride._id} is due — status accepted, scheduled_ride_due emitted`);
+        await assignPickupOtpAndNotify(io, ride._id, { emitScheduledDue: true });
+        console.log(`Scheduled ride ${ride._id} is due — status accepted, OTP assigned, scheduled_ride_due emitted`);
+      }
+
+      // 4) Mid-trip stop requests: auto-reject anything past its expiresAt.
+      //    Runs on the same 30s tick — fine because the request TTL itself is 30s.
+      const expiredStopReqs = await Ride.find({
+        'pendingStopRequest.expiresAt': { $ne: null, $lte: now }
+      })
+        .select('_id passengerId driverId pendingStopRequest')
+        .limit(50);
+
+      for (const ride of expiredStopReqs) {
+        const rejectedAddress = ride.pendingStopRequest?.address;
+        ride.pendingStopRequest = undefined;
+        await ride.save();
+
+        const driverId = ride.driverId ? String(ride.driverId) : null;
+        const passengerId = ride.passengerId ? String(ride.passengerId) : null;
+        const payload = {
+          rideId: String(ride._id),
+          address: rejectedAddress,
+          reason: 'timeout'
+        };
+        io.to(`ride_${ride._id}`).emit('stop_rejected', payload);
+        if (driverId) io.to(`tracking_${driverId}`).emit('stop_rejected', payload);
+        if (passengerId) io.to(`passenger_${passengerId}`).emit('stop_rejected', payload);
+        console.log(`[stop-expire] auto-rejected pending stop on ride ${ride._id}`);
       }
     } catch (error) {
       console.error('Error in scheduled rides worker:', error);

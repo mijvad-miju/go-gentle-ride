@@ -22,6 +22,16 @@ const passengerSchema = new mongoose.Schema({
     required: true,
     minlength: 6
   },
+  gender: {
+    type: String,
+    enum: ['male', 'female', 'other'],
+    trim: true
+  },
+  preferredDriverGender: {
+    type: String,
+    enum: ['male', 'female', 'any'],
+    default: 'any'
+  },
   role: {
     type: String,
     default: 'passenger'

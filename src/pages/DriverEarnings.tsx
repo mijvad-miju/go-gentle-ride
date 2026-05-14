@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import Header from '@/components/common/Header';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { IndianRupee, TrendingUp, Calendar, Clock, ChevronRight } from 'lucide-react';
 import { getAuthToken, getUser } from '@/lib/auth';
@@ -157,12 +156,6 @@ const DriverEarnings: React.FC = () => {
                             ))}
                         </div>
                     )}
-                </div>
-
-                <div className="pt-4">
-                    <Button variant="outline" className="w-full rounded-2xl border-dashed border-border py-6 text-muted-foreground font-bold tracking-tight">
-                        Download Tax Report (2024)
-                    </Button>
                 </div>
             </main>
         </div>

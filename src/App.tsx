@@ -14,6 +14,7 @@ import DriverTrips from "./pages/DriverTrips";
 import DriverProfile from "./pages/DriverProfile";
 import DriverEarnings from "./pages/DriverEarnings";
 import Emergency from "./pages/Emergency";
+import SharedTracking from "./pages/SharedTracking";
 import TripHistory from "./pages/TripHistory";
 import PassengerPrebooks from "./pages/PassengerPrebooks";
 import Profile from "./pages/Profile";
@@ -34,6 +35,8 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Index />} />
+          {/* PUBLIC: shared trip-tracking link (no auth) */}
+          <Route path="/track/:token" element={<SharedTracking />} />
           <Route path="/passenger/login" element={<PassengerLogin />} />
 
           <Route
@@ -88,7 +91,7 @@ const App = () => (
           <Route
             path="/emergency"
             element={
-              <ProtectedRoute>
+              <ProtectedRoute allowedRole="passenger">
                 <Emergency />
               </ProtectedRoute>
             }

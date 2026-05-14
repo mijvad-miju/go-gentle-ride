@@ -9,13 +9,18 @@ const router = express.Router();
 // Register new passenger
 router.post('/register', async (req, res) => {
   try {
-    const { name, phone, email, password } = req.body;
+    const { name, phone, email, password, gender } = req.body;
 
     // Validate required fields
     if (!name || !phone || !password) {
       return res.status(400).json({
         message: 'Name, phone, and password are required'
       });
+    }
+
+    // If a gender is supplied, validate it; otherwise it stays unset and can be added in Profile.
+    if (gender && !['male', 'female', 'other'].includes(gender)) {
+      return res.status(400).json({ message: 'Invalid gender value' });
     }
 
     // Check if user already exists
@@ -39,7 +44,8 @@ router.post('/register', async (req, res) => {
       name,
       phone,
       email: email || '',
-      password: hashedPassword
+      password: hashedPassword,
+      gender: gender || undefined
     });
 
     const savedUser = await user.save();

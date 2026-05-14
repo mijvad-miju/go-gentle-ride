@@ -48,6 +48,32 @@ const rideSchema = new mongoose.Schema({
       }
     }
   },
+  // Multi-stop itinerary. Visited in array order between pickup and dropoff.
+  // `source` distinguishes stops added at booking-time vs mid-trip (driver-approved).
+  stops: [{
+    address: { type: String, required: true },
+    coordinates: {
+      lat: { type: Number, required: true },
+      lng: { type: Number, required: true }
+    },
+    source: { type: String, enum: ['booking', 'mid_trip'], default: 'booking' },
+    status: { type: String, enum: ['pending', 'visited', 'skipped'], default: 'pending' },
+    addedAt: { type: Date, default: Date.now },
+    visitedAt: { type: Date, default: null }
+  }],
+  // Mid-trip stop awaiting driver acceptance. Auto-rejects after `expiresAt`.
+  pendingStopRequest: {
+    address: { type: String, default: null },
+    coordinates: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null }
+    },
+    fareDelta: { type: Number, default: 0 },
+    distanceDeltaKm: { type: Number, default: 0 },
+    durationDeltaMin: { type: Number, default: 0 },
+    requestedAt: { type: Date, default: null },
+    expiresAt: { type: Date, default: null }
+  },
   fare: {
     estimated: {
       type: Number,
@@ -135,6 +161,50 @@ const rideSchema = new mongoose.Schema({
   voiceTranscript: {
     type: String,
     default: null
+  },
+  /** 4-digit OTP: passenger shares with driver to start trip. Hidden from default queries. */
+  pickupOtp: {
+    type: String,
+    default: null,
+    select: false
+  },
+  pickupOtpExpiresAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  // Live-share token: lets the passenger generate a public read-only tracking URL.
+  // `select: false` keeps the token out of the default ride payloads — only the
+  // share routes opt-in to read it.
+  shareToken: {
+    type: String,
+    index: true,
+    sparse: true,
+    select: false,
+    default: null
+  },
+  shareExpiresAt: {
+    type: Date,
+    default: null,
+    select: false
+  },
+  // Lady-safety: gender preference snapshot at ride creation time.
+  // Driver's own preferredPassengerGender is read live from the Driver doc when matching.
+  passengerGender: {
+    type: String,
+    enum: ['male', 'female', 'other'],
+    default: null
+  },
+  preferredDriverGender: {
+    type: String,
+    enum: ['male', 'female', 'any'],
+    default: 'any'
+  },
+  /** When true, the passenger-side gender filter is enforced during dispatch.
+   *  Cleared (false) when the passenger taps "expand search" after 60s. */
+  genderFilterActive: {
+    type: Boolean,
+    default: true
   },
   // Scheduled Ride Info
   isScheduled: {

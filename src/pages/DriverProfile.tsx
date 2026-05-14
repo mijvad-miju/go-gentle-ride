@@ -1,17 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Mail, Phone, LogOut, Shield, Star, Car, Award, MapPin, CreditCard, Calendar, BadgeCheck, FileText } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { User, Mail, Phone, LogOut, Shield, Car, Award, MapPin, Calendar, ShieldCheck } from 'lucide-react';
 import Header from '@/components/common/Header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { clearAuth, getAuthHeaders, getUser } from '@/lib/auth';
+import { clearAuth, getAuthHeaders, getUser, updateStoredUser } from '@/lib/auth';
 import { getApiOrigin } from '@/lib/apiOrigin';
 import { toast } from '@/hooks/use-toast';
+import GenderCardGroup, { GenderValue } from '@/components/common/GenderCardGroup';
 
 const DriverProfile: React.FC = () => {
     const navigate = useNavigate();
+    const { t } = useTranslation();
     const [user, setUser] = useState(getUser('driver'));
     const [loading, setLoading] = useState(true);
+    const [savingPref, setSavingPref] = useState(false);
 
     useEffect(() => {
         const fetchLatestProfile = async () => {
@@ -52,6 +56,31 @@ const DriverProfile: React.FC = () => {
         navigate('/driver/login');
     };
 
+    const handleSavePassengerPref = async (value: GenderValue) => {
+        if (!user) return;
+        setSavingPref(true);
+        try {
+            const res = await fetch(`${getApiOrigin()}/api/users/${user._id}/safety-prefs`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ preferredPassengerGender: value })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data?.message || 'Could not save preference');
+            const next = updateStoredUser({ preferredPassengerGender: value });
+            if (next) setUser(next);
+            toast({ title: t('saved', 'Saved'), description: t('safety_pref_saved', 'Safety preference updated') });
+        } catch (e: any) {
+            toast({
+                title: t('error', 'Error'),
+                description: e?.message || 'Could not save',
+                variant: 'destructive'
+            });
+        } finally {
+            setSavingPref(false);
+        }
+    };
+
     if (loading) {
         return (
             <div className="min-h-screen bg-background flex items-center justify-center">
@@ -64,7 +93,6 @@ const DriverProfile: React.FC = () => {
 
     const driverInfo = user.driverInfo || {};
     const address = user.address || {};
-    const bank = driverInfo.bankDetails || {};
 
     const safe = (value?: string | number | null) => {
         if (value === null || value === undefined || value === '') return 'Not provided';
@@ -107,28 +135,11 @@ const DriverProfile: React.FC = () => {
                 </div>
 
                 {/* Stats Summary */}
-                <div className="grid grid-cols-3 gap-3">
-                    <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
-                        <CardContent className="p-3 text-center">
-                            <p className="text-xl font-bold text-primary flex items-center justify-center gap-1">
-                                {driverInfo.rating || '0.0'}
-                                <Star className="w-3 h-3 fill-primary" />
-                            </p>
-                            <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-tighter">Rating</p>
-                        </CardContent>
-                    </Card>
-                    <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+                <div className="flex justify-center">
+                    <Card className="border-border/50 bg-card/50 backdrop-blur-sm w-full max-w-xs">
                         <CardContent className="p-3 text-center">
                             <p className="text-xl font-bold text-primary">{driverInfo.totalRides || 0}</p>
                             <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-tighter">Rides</p>
-                        </CardContent>
-                    </Card>
-                    <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
-                        <CardContent className="p-3 text-center">
-                            <p className={`text-xs font-bold ${driverInfo.isVerified ? 'text-success' : 'text-muted-foreground'}`}>
-                                {driverInfo.isVerified ? 'Verified' : 'Pending'}
-                            </p>
-                            <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-tighter">KYC</p>
                         </CardContent>
                     </Card>
                 </div>
@@ -142,7 +153,6 @@ const DriverProfile: React.FC = () => {
                                 { icon: Car, label: 'Vehicle Number', value: driverInfo.vehicleNumber || 'N/A' },
                                 { icon: Shield, label: 'License Number', value: driverInfo.licenseNumber || 'N/A' },
                                 { icon: Award, label: 'Vehicle Type', value: driverInfo.vehicleType?.toUpperCase() || 'AUTO' },
-                                { icon: BadgeCheck, label: 'Trusted Driver', value: driverInfo.isTrusted ? 'Yes' : 'No' },
                             ].map((item, idx) => (
                                 <div key={idx} className={`flex items-center gap-4 p-4 ${idx !== 0 ? 'border-t border-border/50' : ''}`}>
                                     <div className="w-10 h-10 bg-muted rounded-xl flex items-center justify-center">
@@ -183,48 +193,26 @@ const DriverProfile: React.FC = () => {
                     </Card>
                 </div>
 
+                {/* Passenger preference (lady-safety) */}
                 <div className="space-y-3">
-                    <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-widest px-1">KYC Details</h3>
-                    <Card className="border-border/50">
-                        <CardContent className="p-0">
-                            {[
-                                { icon: FileText, label: 'Aadhar Number', value: safe(driverInfo.aadharNumber) },
-                                { icon: FileText, label: 'PAN Number', value: safe(driverInfo.panNumber) },
-                                { icon: Shield, label: 'Verification Status', value: driverInfo.isVerified ? 'Verified' : 'Not Verified' },
-                            ].map((item, idx) => (
-                                <div key={idx} className={`flex items-center gap-4 p-4 ${idx !== 0 ? 'border-t border-border/50' : ''}`}>
-                                    <div className="w-10 h-10 bg-muted rounded-xl flex items-center justify-center">
-                                        <item.icon className="w-5 h-5 text-muted-foreground" />
-                                    </div>
-                                    <div className="flex-1">
-                                        <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-tighter">{item.label}</p>
-                                        <p className="text-sm font-semibold text-foreground">{item.value}</p>
-                                    </div>
-                                </div>
-                            ))}
-                        </CardContent>
-                    </Card>
-                </div>
-
-                <div className="space-y-3">
-                    <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-widest px-1">Bank Details</h3>
-                    <Card className="border-border/50">
-                        <CardContent className="p-0">
-                            {[
-                                { icon: CreditCard, label: 'Account Number', value: safe(bank.accountNumber) },
-                                { icon: Shield, label: 'IFSC Code', value: safe(bank.ifscCode) },
-                                { icon: Award, label: 'Bank Name', value: safe(bank.bankName) },
-                            ].map((item, idx) => (
-                                <div key={idx} className={`flex items-center gap-4 p-4 ${idx !== 0 ? 'border-t border-border/50' : ''}`}>
-                                    <div className="w-10 h-10 bg-muted rounded-xl flex items-center justify-center">
-                                        <item.icon className="w-5 h-5 text-muted-foreground" />
-                                    </div>
-                                    <div className="flex-1">
-                                        <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-tighter">{item.label}</p>
-                                        <p className="text-sm font-semibold text-foreground">{item.value}</p>
-                                    </div>
-                                </div>
-                            ))}
+                    <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-widest px-1 flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 text-primary" />
+                        {t('prefer_passenger_gender_title', 'Passenger preference')}
+                    </h3>
+                    <Card className="border-border/50 bg-card/40 backdrop-blur-xl">
+                        <CardContent className="p-4 space-y-3">
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                                {t(
+                                    'prefer_gender_note_driver',
+                                    'Only passengers matching this preference will see your availability.'
+                                )}
+                            </p>
+                            <GenderCardGroup
+                                value={(user.preferredPassengerGender ?? 'any') as GenderValue}
+                                onChange={handleSavePassengerPref}
+                                options={['female', 'male', 'any']}
+                                disabled={savingPref}
+                            />
                         </CardContent>
                     </Card>
                 </div>

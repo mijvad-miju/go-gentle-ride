@@ -9,6 +9,7 @@ import { toast } from '@/hooks/use-toast';
 
 import { getUser, isAuthenticated, setAuth } from '@/lib/auth';
 import { getApiOrigin } from '@/lib/apiOrigin';
+import GenderCardGroup, { GenderValue } from '@/components/common/GenderCardGroup';
 
 type AuthMode = 'login' | 'register';
 
@@ -35,6 +36,7 @@ const PassengerLogin: React.FC = () => {
     email: '',
     password: ''
   });
+  const [gender, setGender] = useState<GenderValue | null>(null);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({
@@ -61,6 +63,15 @@ const PassengerLogin: React.FC = () => {
           setLoading(false);
           return;
         }
+        if (!gender) {
+          toast({
+            title: t('gender_required_label', 'Please select your gender'),
+            description: t('gender_required_desc', 'We use this to match drivers based on your safety preference.'),
+            variant: 'destructive'
+          });
+          setLoading(false);
+          return;
+        }
 
         const response = await fetch(`${API_URL}/api/auth/register`, {
           method: 'POST',
@@ -71,7 +82,8 @@ const PassengerLogin: React.FC = () => {
             name: formData.name,
             phone: formData.phone,
             email: formData.email,
-            password: formData.password
+            password: formData.password,
+            gender
           })
         });
 
@@ -231,6 +243,17 @@ const PassengerLogin: React.FC = () => {
             </div>
           )}
 
+          {mode === 'register' && (
+            <div className="space-y-2">
+              <Label>{t('gender_required_label', 'Your gender')}</Label>
+              <GenderCardGroup
+                value={gender}
+                onChange={setGender}
+                options={['female', 'male', 'other']}
+              />
+            </div>
+          )}
+
           <div className="space-y-2">
             <Label htmlFor="password">{t('password')}</Label>
             <div className="relative">
@@ -281,6 +304,7 @@ const PassengerLogin: React.FC = () => {
               onClick={() => {
                 setMode(mode === 'login' ? 'register' : 'login');
                 setFormData({ name: '', phone: '', email: '', password: '' });
+                setGender(null);
               }}
               className="text-primary font-semibold hover:underline"
             >

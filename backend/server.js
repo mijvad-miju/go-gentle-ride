@@ -13,6 +13,8 @@ import earningRoutes from './routes/earnings.js';
 import adminRoutes from './routes/admin.js';
 import voiceRoutes from './routes/voice.js';
 import geocodeRoutes from './routes/geocode.js';
+import safetyRoutes from './routes/safety.js';
+import shareRoutes from './routes/share.js';
 import { startScheduler } from './services/scheduler.js';
 
 // Always load backend/.env (works when Node cwd is repo root or backend/)
@@ -60,6 +62,12 @@ io.on('connection', (socket) => {
     console.log(`Socket ${socket.id} joined ride_${rideId}`);
   });
 
+  socket.on('join_share', (token) => {
+    if (!token || typeof token !== 'string' || token.length < 16) return;
+    socket.join(`track_${token}`);
+    console.log(`Socket ${socket.id} joined share track_${token.slice(0, 8)}…`);
+  });
+
   socket.on('join_driver_tracking', (driverId) => {
     let id = '';
     if (driverId == null) return;
@@ -86,6 +94,8 @@ app.use('/api/earnings', earningRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/voice-booking', voiceRoutes);
 app.use('/api/geocode', geocodeRoutes);
+app.use('/api/safety', safetyRoutes);
+app.use('/api', shareRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

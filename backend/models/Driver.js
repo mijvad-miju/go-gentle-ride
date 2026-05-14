@@ -27,6 +27,11 @@ const driverSchema = new mongoose.Schema({
     enum: ['male', 'female', 'other'],
     trim: true
   },
+  preferredPassengerGender: {
+    type: String,
+    enum: ['male', 'female', 'any'],
+    default: 'any'
+  },
   address: {
     street: String,
     city: String,
